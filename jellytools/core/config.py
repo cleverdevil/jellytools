@@ -37,7 +37,8 @@ class JellytoolsConfig:
     # Per-library animation configuration
     # This should be a dictionary mapping library names to configuration objects
     # Each library can have the following keys:
-    #   - animation_type: The type of animation to use for this library
+    #   - animation_type: The type of animation to use for this library (string)
+    #   - animation_types: A list of animation types to generate (list of strings)
     #   - additional parameters can be added later
     LIBRARY_ANIMATIONS: Dict[str, Dict[str, Any]] = None
 
@@ -75,6 +76,32 @@ class JellytoolsConfig:
         """
         library_config = self.get_animation_config(library_name)
         return library_config.get("animation_type", self.DEFAULT_ANIMATION_TYPE)
+        
+    def get_library_animation_types(self, library_name: str) -> List[str]:
+        """
+        Get the list of animation types configured for a specific library.
+        
+        Args:
+            library_name (str): Name of the library
+            
+        Returns:
+            List[str]: List of animation types for the library. 
+                      If not specified, returns a list with just the default animation type.
+        """
+        library_config = self.get_animation_config(library_name)
+        
+        # First check for the animation_types list
+        animation_types = library_config.get("animation_types")
+        if animation_types:
+            return animation_types
+            
+        # Fall back to animation_type if it exists
+        animation_type = library_config.get("animation_type")
+        if animation_type:
+            return [animation_type]
+            
+        # Use default animation type if nothing is specified
+        return [self.DEFAULT_ANIMATION_TYPE]
 
 
 # Global config instance
@@ -215,10 +242,13 @@ DEFAULT_OUTPUT_DIR = "output"
 # Example:
 LIBRARY_ANIMATIONS = {
     "Movies": {
-        "animation_type": "mosaic"
+        "animation_type": "mosaic"  # Single animation type
     },
     "TV Shows": {
-        "animation_type": "waterfall"
+        "animation_types": ["waterfall", "spiral"]  # Multiple animation types
+    },
+    "Music": {
+        "animation_types": ["grid", "mosaic", "spiral"]  # Generate all three
     }
 }
 """

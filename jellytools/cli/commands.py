@@ -47,7 +47,8 @@ def render_animation(
     library_name: str,
     animation_type: str,
     output_filename: str,
-) -> str:
+    save_last_frame: bool = True,
+) -> dict:
     """
     Render the entire animation to a high-res video file.
     
@@ -56,9 +57,12 @@ def render_animation(
         library_name (str): Name of the library to render
         animation_type (str): Type of animation to use
         output_filename (str): Path to save the output video
+        save_last_frame (bool): Whether to save the last frame as a PNG
         
     Returns:
-        str: Path to the rendered video file
+        dict: Dictionary with paths to the rendered files:
+              - 'video': Path to the rendered video file
+              - 'thumbnail': Path to the PNG thumbnail (if saved)
     """
     # Initialize pygame if not already initialized
     if not pygame.get_init():
@@ -88,6 +92,10 @@ def render_animation(
     total_frames = int(TOTAL_ANIMATION_TIME * FPS)
 
     logger.info(f"Rendering {total_frames} frames at {FPS} FPS in 2.5K resolution...")
+
+    # Variables to store the last frame for thumbnail
+    last_frame_data = None
+    thumbnail_path = None
 
     # Batch the rendering in chunks to avoid memory overruns
     chunk_size = 100
@@ -119,6 +127,10 @@ def render_animation(
             # Convert RGB to BGR (pygame uses RGB, OpenCV uses BGR)
             frame_data = cv2.cvtColor(frame_data, cv2.COLOR_RGB2BGR)
 
+            # Store the last frame for thumbnail
+            if frame == total_frames - 1:
+                last_frame_data = frame_data.copy()
+
             # Write the frame to the video
             video.write(frame_data)
 
@@ -139,7 +151,17 @@ def render_animation(
     # Release video writer
     video.release()
     logger.info(f"Animation rendered to {output_filename}")
-    return output_filename
+    
+    # Save the last frame as a PNG if requested
+    if save_last_frame and last_frame_data is not None:
+        thumbnail_path = output_filename.replace('.mp4', '_thumbnail.png')
+        cv2.imwrite(thumbnail_path, last_frame_data)
+        logger.info(f"Thumbnail saved to {thumbnail_path}")
+    
+    return {
+        'video': output_filename,
+        'thumbnail': thumbnail_path
+    }
 
 
 # Function for generating web versions (GIF/APNG) has been removed
@@ -183,9 +205,10 @@ def init(file):
               help='Animation type to use (overrides config)')
 @click.option('--skip-hi-res', is_flag=True, help='Skip generating high-resolution MP4')
 @click.option('--skip-download', is_flag=True, help='Skip downloading posters from servers')
+@click.option('--skip-thumbnails', is_flag=True, help='Skip generating PNG thumbnails of the last frame')
 @click.option('--output-dir', '-o', help='Output directory for videos')
 @click.pass_context
-def generate(ctx, animation_type, skip_hi_res, skip_download, output_dir):
+def generate(ctx, animation_type, skip_hi_res, skip_download, skip_thumbnails, output_dir):
     """Generate library card animations"""
     # Check dependencies first
     if not Utils.check_dependencies():
@@ -220,51 +243,77 @@ def generate(ctx, animation_type, skip_hi_res, skip_download, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
     for library_name in config.JELLYFIN_LIBRARIES:
-        # Initialize pygame
-        pygame.init()
-        
-        # Determine which animation type to use:
-        # 1. Command line argument overrides everything
-        # 2. Library-specific configuration in config file
-        # 3. Default animation type
-        library_animation_type = animation_type
-        if library_animation_type is None:
-            library_animation_type = config.get_library_animation_type(library_name)
-            
         click.echo(f"\n=== Processing library: {library_name} ===")
-        click.echo(f"Using animation type: {library_animation_type}")
-
-        # Generate the high-resolution animation
-        hi_res_output = None
-        if not skip_hi_res:
-            click.echo("\n=== Generating High-Resolution Animation ===")
-            hi_res_output = render_animation(
-                animation_manager,
-                library_name,
-                library_animation_type,
-                os.path.join(
-                    output_dir,
-                    f"{library_name}_{library_animation_type}_animation_hi_res.mp4",
-                ),
-            )
+        
+        # Determine which animation types to use:
+        # 1. Command line argument overrides everything
+        # 2. Library-specific configuration in config file with animation_types or animation_type
+        # 3. Default animation type
+        if animation_type:
+            # Use the CLI argument if provided
+            library_animation_types = [animation_type]
+            click.echo(f"Using animation type from command line: {animation_type}")
         else:
-            click.echo("Skipping high-resolution animation generation.")
-            # Look for existing high-res file
-            potential_file = os.path.join(
-                output_dir,
-                f"{library_name}_{library_animation_type}_animation_hi_res.mp4",
-            )
-            if os.path.exists(potential_file):
-                hi_res_output = potential_file
+            # Get animation types from configuration
+            library_animation_types = config.get_library_animation_types(library_name)
+            if len(library_animation_types) == 1:
+                click.echo(f"Using animation type from config: {library_animation_types[0]}")
+            else:
+                click.echo(f"Using multiple animation types from config: {', '.join(library_animation_types)}")
+        
+        # Process each animation type
+        outputs = []
+        for lib_animation_type in library_animation_types:
+            # Initialize pygame
+            pygame.init()
+            
+            click.echo(f"\n--- Generating {lib_animation_type} animation ---")
+            
+            # Generate the high-resolution animation
+            hi_res_output = None
+            if not skip_hi_res:
+                click.echo(f"Creating high-resolution {lib_animation_type} animation")
+                output_filename = os.path.join(
+                    output_dir,
+                    f"{library_name}_{lib_animation_type}_animation_hi_res.mp4"
+                )
+                
+                output_files = render_animation(
+                    animation_manager,
+                    library_name,
+                    lib_animation_type,
+                    output_filename,
+                    save_last_frame=not skip_thumbnails,
+                )
+                
+                hi_res_output = output_files['video']
+                thumbnail = output_files['thumbnail']
+                
+                if thumbnail:
+                    click.echo(f"Thumbnail saved to: {thumbnail}")
+                
+                outputs.append(hi_res_output)
+            else:
+                click.echo("Skipping high-resolution animation generation.")
+                # Look for existing high-res file
+                potential_file = os.path.join(
+                    output_dir,
+                    f"{library_name}_{lib_animation_type}_animation_hi_res.mp4",
+                )
+                if os.path.exists(potential_file):
+                    hi_res_output = potential_file
+                    outputs.append(hi_res_output)
 
-        # Web-friendly version generation has been removed
-
+            # Cleanup after each animation
+            pygame.quit()
+        
         elapsed_time = time.time() - start_time
         click.echo(f"\n=== Generation for {library_name} Complete ===")
+        click.echo(f"Generated {len(outputs)} animations")
+        for output in outputs:
+            filename = os.path.basename(output)
+            click.echo(f"- {filename}")
         click.echo(f"Time elapsed: {elapsed_time:.2f} seconds")
-
-        # Cleanup
-        pygame.quit()
 
     click.echo("\nDone!")
     return 0
@@ -351,8 +400,12 @@ def animations(ctx):
         return
     
     for library_name, library_config in config.LIBRARY_ANIMATIONS.items():
-        animation_type = library_config.get("animation_type", config.DEFAULT_ANIMATION_TYPE)
-        click.echo(f"- {library_name}: {animation_type}")
+        animation_types = library_config.get("animation_types", [])
+        if not animation_types:
+            animation_type = library_config.get("animation_type", config.DEFAULT_ANIMATION_TYPE)
+            click.echo(f"- {library_name}: {animation_type}")
+        else:
+            click.echo(f"- {library_name}: {', '.join(animation_types)}")
     
     click.echo("\n=== Libraries Without Specific Configuration ===")
     configured_libraries = set(config.LIBRARY_ANIMATIONS.keys())

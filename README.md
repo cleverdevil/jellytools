@@ -69,6 +69,20 @@ PLEX_LIBRARIES = ["Movies", "TV Shows"]
 POSTER_DIRECTORY = "posters"
 FONT_PATH = "./font.ttf"
 CAPITALIZE_TEXT = True
+
+# Animation configuration
+DEFAULT_ANIMATION_TYPE = "grid"
+DEFAULT_OUTPUT_DIR = "output"
+
+# Per-library animation configuration
+LIBRARY_ANIMATIONS = {
+    "Movies": {
+        "animation_type": "mosaic"  # Single animation type
+    },
+    "TV Shows": {
+        "animation_types": ["waterfall", "spiral"]  # Multiple animation types
+    }
+}
 ```
 
 ## Usage
@@ -85,6 +99,12 @@ jellytools libraries
 jellytools animations
 ```
 
+This command displays:
+- The default animation type
+- All available animation types
+- The animation configurations for each library
+- Which libraries are using multiple animation types
+
 ### Generate Library Cards
 
 ```bash
@@ -99,6 +119,9 @@ jellytools generate --animation-type waterfall --output-dir my_animations
 
 # Skip steps
 jellytools generate --skip-hi-res --skip-download
+
+# Skip thumbnail generation
+jellytools generate --skip-thumbnails
 ```
 
 ### Sync Collections and Artwork from Plex to Jellyfin
@@ -121,9 +144,10 @@ General Options:
 
 Generate Command Options:
   -a, --animation-type [grid|waterfall|mosaic|spiral]
-                                  Animation type to use
+                                  Animation type to use (overrides config)
   --skip-hi-res                   Skip generating high-resolution MP4
   --skip-download                 Skip downloading posters from servers
+  --skip-thumbnails               Skip generating PNG thumbnails of the last frame
   -o, --output-dir OUTPUT_DIR     Output directory for videos
 
 Sync Command Options:
