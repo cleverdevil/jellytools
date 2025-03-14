@@ -38,3 +38,9 @@ Thumbs.db
 
 # Local test files
 test_*.py
+
+# Virtual environment
+jellytools-*/
+
+# Python cache directory
+__pycache__/
