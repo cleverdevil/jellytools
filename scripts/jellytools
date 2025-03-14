@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""
+Jellytools CLI entry point.
+"""
+from jellytools.cli.commands import generate_cli
+
+if __name__ == "__main__":
+    generate_cli()
