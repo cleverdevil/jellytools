@@ -122,6 +122,9 @@ jellytools generate --skip-hi-res --skip-download
 
 # Skip thumbnail generation
 jellytools generate --skip-thumbnails
+
+# Skip low-resolution video generation
+jellytools generate --skip-low-res
 ```
 
 ### Sync Collections and Artwork from Plex to Jellyfin
@@ -146,6 +149,7 @@ Generate Command Options:
   -a, --animation-type [grid|waterfall|mosaic|spiral]
                                   Animation type to use (overrides config)
   --skip-hi-res                   Skip generating high-resolution MP4
+  --skip-low-res                  Skip generating 480p low-resolution MP4
   --skip-download                 Skip downloading posters from servers
   --skip-thumbnails               Skip generating PNG thumbnails of the last frame
   -o, --output-dir OUTPUT_DIR     Output directory for videos
