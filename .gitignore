@@ -28,6 +28,7 @@ output/
 *.png
 *.jpg
 *.jpeg
+config.py
 
 # But allow examples
 !examples/*.mp4
