@@ -303,6 +303,7 @@ def sync_media_images(
     plex_media_map: Dict[str, Any],
     jellyfin_media_map: Dict[str, Any],
     jellyfin_client: Any,
+    image_types: List[str] = ["thumb", "art", "banner"],
 ) -> int:
     """
     Sync images from Plex media items to Jellyfin media items.
@@ -311,6 +312,7 @@ def sync_media_images(
         plex_media_map: Mapping of IMDB IDs to Plex media objects
         jellyfin_media_map: Mapping of IMDB IDs to Jellyfin media objects
         jellyfin_client: Jellyfin client instance
+        image_types: Types of images to sync (default: ["thumb", "art", "banner"])
 
     Returns:
         int: Number of items with synced images
@@ -319,46 +321,80 @@ def sync_media_images(
     common_imdb_ids = set(plex_media_map.keys()) & set(jellyfin_media_map.keys())
     total_items = len(common_imdb_ids)
 
-    logger.info(f"Syncing images for {total_items} media items...")
+    # Define mapping from Plex image types to Jellyfin image types
+    image_type_mapping = {
+        "thumb": "Primary",  # Poster/thumbnail
+        "art": "Backdrop",   # Background art
+        "banner": "Banner",  # Banner image
+    }
+
+    logger.info(f"Syncing {', '.join(image_types)} images for {total_items} media items...")
 
     # Process in batches to show progress
     processed = 0
+    items_with_images = 0
+    total_images_synced = 0
+    
     for imdb_id in common_imdb_ids:
         processed += 1
+        item_synced = False
 
         plex_obj = plex_media_map[imdb_id]
         jellyfin_id = jellyfin_media_map[imdb_id]["Id"]
-
-        # Just try to sync the primary/poster image
-        try:
-            image_data, extension = get_plex_image_data(plex_obj, "thumb")
-            if image_data and jellyfin_client.upload_image(
-                jellyfin_id, "Primary", image_data, extension
-            ):
-                synced_count += 1
-        except Exception as e:
-            logger.error(f"Error syncing image for {plex_obj.title}: {e}")
+        
+        # Try to sync each image type
+        for plex_type in image_types:
+            if plex_type not in image_type_mapping:
+                logger.warning(f"Unknown image type: {plex_type}, skipping")
+                continue
+                
+            jellyfin_type = image_type_mapping[plex_type]
+            
+            try:
+                image_data, extension = get_plex_image_data(plex_obj, plex_type)
+                if image_data and jellyfin_client.upload_image(
+                    jellyfin_id, jellyfin_type, image_data, extension
+                ):
+                    total_images_synced += 1
+                    item_synced = True
+                    logger.debug(f"Synced {plex_type} → {jellyfin_type} for {plex_obj.title}")
+            except Exception as e:
+                logger.debug(f"Error syncing {plex_type} image for {plex_obj.title}: {e}")
+        
+        # Count items that had at least one image synced
+        if item_synced:
+            items_with_images += 1
 
         # Show progress periodically
         if processed % 20 == 0 or processed == total_items:
             logger.info(
-                f"Processed {processed}/{total_items} items, synced images for {synced_count} items"
+                f"Processed {processed}/{total_items} items, "
+                f"synced {total_images_synced} images for {items_with_images} items"
             )
 
-    return synced_count
+    logger.info(f"Total: {total_images_synced} images synced for {items_with_images} items")
+    return items_with_images
 
 
-def sync_collections(server_manager: ServerManager) -> Dict[str, int]:
+def sync_collections(
+    server_manager: ServerManager,
+    clean_collections: bool = True,
+    sync_images: bool = True,
+    sync_all_artwork: bool = True,
+) -> Dict[str, int]:
     """
-    Main function to synchronize collections from Plex to Jellyfin.
+    Main function to synchronize collections and artwork from Plex to Jellyfin.
 
     Args:
         server_manager: Server manager instance with connections to both servers
+        clean_collections: Whether to clean existing Jellyfin collections
+        sync_images: Whether to sync images at all
+        sync_all_artwork: Whether to sync all artwork types (not just primary images)
 
     Returns:
         dict: Summary statistics of the synchronization
     """
-    logger.info("\n=== Starting Plex to Jellyfin Collection Synchronization ===\n")
+    logger.info("\n=== Starting Plex to Jellyfin Synchronization ===\n")
     start_time = time.time()
 
     # Get Jellyfin client
@@ -373,90 +409,110 @@ def sync_collections(server_manager: ServerManager) -> Dict[str, int]:
             "elapsed_time": 0,
         }
 
-    # Step 1: Get Plex collections data
-    logger.info("\n--- Gathering Plex Data ---")
-    plex_collections, plex_collection_objects = get_plex_collections(server_manager)
-
-    if not plex_collections:
-        logger.error("No Plex collections found or Plex server not configured")
-        return {
-            "collections_created": 0,
-            "collections_failed": 0,
-            "collections_with_images": 0,
-            "media_with_images": 0,
-            "elapsed_time": time.time() - start_time,
-        }
-
-    # Step 2: Get Jellyfin media data
-    logger.info("\n--- Gathering Jellyfin Data ---")
-    jellyfin_media = get_jellyfin_media(server_manager)
-
-    # Step 3: Clean existing Jellyfin collections
-    logger.info("\n--- Cleaning Jellyfin Collections ---")
-    clean_jellyfin_collections(server_manager)
-
-    # Step 4: Create new collections in Jellyfin
-    logger.info("\n--- Creating Jellyfin Collections ---")
+    # Step 1: Get Plex collections data (only if we're syncing collections)
     collections_created = 0
     collections_failed = 0
     collections_with_images = 0
+    plex_collections = {}
+    plex_collection_objects = {}
+    
+    if clean_collections:
+        logger.info("\n--- Gathering Plex Collections Data ---")
+        plex_collections, plex_collection_objects = get_plex_collections(server_manager)
 
-    for collection_name, imdb_ids in plex_collections.items():
-        # Convert IMDB IDs to Jellyfin media IDs
-        jellyfin_item_ids = []
-        for imdb_id in imdb_ids:
-            if imdb_id in jellyfin_media:
-                jellyfin_item_ids.append(jellyfin_media[imdb_id]["Id"])
+        if not plex_collections:
+            logger.warning("No Plex collections found or Plex server not configured")
+            # Continue for media artwork sync
 
-        if not jellyfin_item_ids:
-            logger.info(
-                f"Skipping collection '{collection_name}' - no matching items in Jellyfin"
-            )
-            continue
+    # Step 2: Get Jellyfin media data
+    logger.info("\n--- Gathering Jellyfin Media Data ---")
+    jellyfin_media = get_jellyfin_media(server_manager)
 
-        logger.info(
-            f"Creating collection '{collection_name}' with {len(jellyfin_item_ids)} items"
-        )
-        try:
-            result = jellyfin_client.create_collection(
-                collection_name, jellyfin_item_ids
-            )
-            collections_created += 1
+    # Step 3: Clean existing Jellyfin collections if requested
+    if clean_collections:
+        logger.info("\n--- Cleaning Jellyfin Collections ---")
+        clean_jellyfin_collections(server_manager)
 
-            # Sync collection images if enabled
-            if "Id" in result:
-                plex_collection = plex_collection_objects[collection_name]
-                if sync_collection_images(
-                    plex_collection, result["Id"], jellyfin_client
-                ):
-                    collections_with_images += 1
+        # Step 4: Create new collections in Jellyfin
+        if plex_collections:
+            logger.info("\n--- Creating Jellyfin Collections ---")
+            
+            for collection_name, imdb_ids in plex_collections.items():
+                # Convert IMDB IDs to Jellyfin media IDs
+                jellyfin_item_ids = []
+                for imdb_id in imdb_ids:
+                    if imdb_id in jellyfin_media:
+                        jellyfin_item_ids.append(jellyfin_media[imdb_id]["Id"])
 
-        except Exception as e:
-            logger.error(f"Error creating collection '{collection_name}': {e}")
-            collections_failed += 1
+                if not jellyfin_item_ids:
+                    logger.info(
+                        f"Skipping collection '{collection_name}' - no matching items in Jellyfin"
+                    )
+                    continue
 
-    # Step 5: Sync media images
+                logger.info(
+                    f"Creating collection '{collection_name}' with {len(jellyfin_item_ids)} items"
+                )
+                try:
+                    result = jellyfin_client.create_collection(
+                        collection_name, jellyfin_item_ids
+                    )
+                    collections_created += 1
+
+                    # Sync collection images if enabled
+                    if sync_images and "Id" in result:
+                        plex_collection = plex_collection_objects[collection_name]
+                        if sync_collection_images(
+                            plex_collection, result["Id"], jellyfin_client
+                        ):
+                            collections_with_images += 1
+
+                except Exception as e:
+                    logger.error(f"Error creating collection '{collection_name}': {e}")
+                    collections_failed += 1
+
+    # Step 5: Sync media images if not disabled
     media_with_images = 0
 
-    # Check if sync_collection_images has been monkey-patched by the skip_images flag
-    if not hasattr(sync_collection_images, "__patched_to_skip__"):
-        logger.info("\n--- Syncing Media Images ---")
-        plex_media_map = build_plex_media_map(server_manager)
-        media_with_images = sync_media_images(
-            plex_media_map, jellyfin_media, jellyfin_client
-        )
+    if sync_images:
+        logger.info("\n--- Syncing Media Artwork ---")
+        
+        # Check if sync_collection_images has been monkey-patched by the skip_images flag
+        if hasattr(sync_collection_images, "__patched_to_skip__"):
+            logger.info("Image syncing has been disabled with --skip-images flag")
+        else:
+            plex_media_map = build_plex_media_map(server_manager)
+            
+            # Determine which image types to sync
+            image_types = ["thumb"]  # Default to just primary/poster images
+            if sync_all_artwork:
+                image_types = ["thumb", "art", "banner"]
+                logger.info("Syncing all artwork types: Primary, Backdrop, and Banner images")
+            else:
+                logger.info("Syncing only Primary/Poster images")
+                
+            # Sync the images
+            media_with_images = sync_media_images(
+                plex_media_map, 
+                jellyfin_media, 
+                jellyfin_client,
+                image_types
+            )
     else:
-        logger.info("\n--- Skipping Media Image Sync ---")
-        logger.info("Image syncing has been disabled with --skip-images flag")
+        logger.info("\n--- Skipping Media Artwork Sync ---")
 
     # Summary
     elapsed_time = time.time() - start_time
     logger.info(f"\n=== Synchronization Complete ===")
     logger.info(f"Time elapsed: {elapsed_time:.2f} seconds")
-    logger.info(f"Collections created: {collections_created}")
-    logger.info(f"Collections failed: {collections_failed}")
-    logger.info(f"Collections with images: {collections_with_images}")
-    logger.info(f"Media items with images: {media_with_images}")
+    
+    if clean_collections:
+        logger.info(f"Collections created: {collections_created}")
+        logger.info(f"Collections failed: {collections_failed}")
+        logger.info(f"Collections with images: {collections_with_images}")
+    
+    if sync_images:
+        logger.info(f"Media items with images: {media_with_images}")
 
     return {
         "collections_created": collections_created,

@@ -174,15 +174,32 @@ The JavaScript will add hidden videos to Jellyfin library cards while maintainin
 
 ### Sync Collections and Artwork from Plex to Jellyfin
 
+By default, `jellytools sync` will:
+- Clean existing collections in Jellyfin
+- Create new collections in Jellyfin based on Plex collections
+- Sync all artwork types (posters, backdrops, banners) for all media
+
 ```bash
-# Sync all collections and their artwork from Plex to Jellyfin
+# Sync everything (default behavior)
 jellytools sync
+
+# Only sync primary/poster images (skip backdrops and banners)
+jellytools sync --primary-only
+
+# Skip collections and only sync artwork
+jellytools sync --skip-collections
+
+# Preserve existing collections (don't delete them)
+jellytools sync --preserve-collections
+
+# Only sync collections, skip all artwork
+jellytools sync --skip-images
 
 # Only clean existing collections in Jellyfin
 jellytools sync --clean-only
 
-# Skip syncing images (faster)
-jellytools sync --skip-images
+# Sync all artwork but skip collections
+jellytools sync --skip-collections --sync-images --all-artwork
 ```
 
 ### Command-line Options
@@ -208,7 +225,10 @@ Generate JavaScript Options:
   --hide-labels/--show-labels     Hide the text labels for library cards (default: true)
 
 Sync Command Options:
-  --skip-images                   Skip syncing images (faster)
+  --skip-images/--sync-images     Skip syncing any images (faster) [default: sync images]
+  --all-artwork/--primary-only    Sync all artwork types including backdrops and banners [default: all artwork]
+  --sync-collections/--skip-collections  Sync collections from Plex to Jellyfin [default: sync collections]
+  --clean-collections/--preserve-collections  Clean existing collections before syncing [default: clean collections]
   --clean-only                    Only clean existing collections without creating new ones
 ```
 

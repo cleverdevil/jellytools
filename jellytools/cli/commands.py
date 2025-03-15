@@ -867,15 +867,42 @@ def generate_js(ctx, output, replay, hide_labels):
 
 
 @cli.command()
-@click.option("--skip-images", is_flag=True, help="Skip syncing images (faster)")
+@click.option(
+    "--skip-images/--sync-images", 
+    default=False,
+    help="Skip syncing any images (faster) [default: sync images]"
+)
+@click.option(
+    "--all-artwork/--primary-only",
+    default=True,
+    help="Sync all artwork types including backdrops and banners [default: all artwork]"
+)
+@click.option(
+    "--sync-collections/--skip-collections",
+    default=True,
+    help="Sync collections from Plex to Jellyfin [default: sync collections]"
+)
+@click.option(
+    "--clean-collections/--preserve-collections",
+    default=True,
+    help="Clean existing Jellyfin collections before syncing [default: clean collections]"
+)
 @click.option(
     "--clean-only",
     is_flag=True,
-    help="Only clean existing collections without creating new ones",
+    help="Only clean existing collections without creating new ones or syncing artwork"
 )
 @click.pass_context
-def sync(ctx, skip_images, clean_only):
-    """Sync collections and artwork from Plex to Jellyfin"""
+def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, clean_only):
+    """Sync collections and artwork from Plex to Jellyfin
+    
+    By default, this command will:
+    - Clean existing Jellyfin collections
+    - Create new collections based on Plex collections
+    - Sync all artwork (posters, backdrops, banners) from Plex to Jellyfin
+    
+    Use the various flags to customize the behavior.
+    """
     # Initialize server manager
     server_manager = ServerManager()
 
@@ -893,7 +920,16 @@ def sync(ctx, skip_images, clean_only):
 
     click.echo("\n=== Starting Plex to Jellyfin Synchronization ===\n")
 
-    # Perform the sync
+    # Print sync configuration
+    click.echo("Sync settings:")
+    click.echo(f"- {'Syncing' if not skip_images else 'Skipping'} images")
+    if not skip_images:
+        click.echo(f"- Syncing {'all artwork types' if all_artwork else 'primary images only'}")
+    click.echo(f"- {'Syncing' if sync_collections else 'Skipping'} collections")
+    if sync_collections:
+        click.echo(f"- {'Cleaning' if clean_collections else 'Preserving'} existing collections")
+
+    # Handle clean-only mode
     if clean_only:
         from jellytools.cli.syncing import clean_jellyfin_collections
 
@@ -902,11 +938,11 @@ def sync(ctx, skip_images, clean_only):
         click.echo("\n=== Clean Operation Complete ===")
         return 0
 
-    # We need to modify the sync function based on the skip_images flag
-    # This implementation passes the flag all the way to the sync_collection_images function
-    if skip_images:
-        click.echo("Skipping image syncing for faster performance")
+    # Import the sync function
+    from jellytools.cli.syncing import sync_collections
 
+    # Handle skip_images flag with legacy compatibility
+    if skip_images:
         # Define a wrapper function that overrides the normal collection image sync
         def skip_sync_collection_images(*args, **kwargs):
             return False
@@ -919,24 +955,33 @@ def sync(ctx, skip_images, clean_only):
 
         # Replace with our no-op function
         import jellytools.cli.syncing
-
         jellytools.cli.syncing.sync_collection_images = skip_sync_collection_images
 
-        # Run the sync
-        results = sync_collections(server_manager)
+    # Run the sync with the chosen options
+    results = sync_collections(
+        server_manager,
+        clean_collections=clean_collections and sync_collections,
+        sync_images=not skip_images,
+        sync_all_artwork=all_artwork
+    )
 
-        # Restore the original function
+    # Restore original function if it was patched
+    if skip_images:
+        import jellytools.cli.syncing
         jellytools.cli.syncing.sync_collection_images = original_sync
-    else:
-        results = sync_collections(server_manager)
 
     # Display summary
     click.echo("\n=== Synchronization Complete ===")
     click.echo(f"Time elapsed: {results['elapsed_time']:.2f} seconds")
-    click.echo(f"Collections created: {results['collections_created']}")
-    click.echo(f"Collections failed: {results['collections_failed']}")
-    click.echo(f"Collections with images: {results['collections_with_images']}")
-    click.echo(f"Media items with images: {results['media_with_images']}")
+    
+    if sync_collections:
+        click.echo(f"Collections created: {results['collections_created']}")
+        click.echo(f"Collections failed: {results['collections_failed']}")
+        if not skip_images:
+            click.echo(f"Collections with images: {results['collections_with_images']}")
+    
+    if not skip_images:
+        click.echo(f"Media items with images: {results['media_with_images']}")
 
     return 0
 
