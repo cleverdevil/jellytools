@@ -18,7 +18,12 @@ from jellytools.animations.base import AnimationManager, WIDTH, HEIGHT, FPS, TOT
 from jellytools.animations import (
     PosterGridAnimation, 
     PosterSpinAnimation, 
-    PosterWaterfallAnimation
+    PosterWaterfallAnimation,
+    PosterMosaicAnimation,
+    PosterVortexAnimation,
+    PosterCascadeAnimation,
+    PosterExplodeAnimation,
+    PosterKaleidoscopeAnimation
 )
 
 # Configure logging
@@ -35,9 +40,17 @@ def register_animations(animation_manager: AnimationManager) -> None:
     Args:
         animation_manager (AnimationManager): Animation manager to register animations with
     """
+    # Original animations
     animation_manager.register_animation('grid', PosterGridAnimation)
     animation_manager.register_animation('waterfall', PosterWaterfallAnimation)
     animation_manager.register_animation('spiral', PosterSpinAnimation)
+    
+    # New animations
+    animation_manager.register_animation('mosaic', PosterMosaicAnimation)
+    animation_manager.register_animation('vortex', PosterVortexAnimation)
+    animation_manager.register_animation('cascade', PosterCascadeAnimation)
+    animation_manager.register_animation('explode', PosterExplodeAnimation)
+    animation_manager.register_animation('kaleidoscope', PosterKaleidoscopeAnimation)
 
 
 def render_animation(
@@ -252,7 +265,7 @@ def init(file):
 
 @cli.command()
 @click.option('--animation-type', '-a', 
-              type=click.Choice(['grid', 'waterfall', 'spiral']), 
+              type=click.Choice(['grid', 'waterfall', 'spiral', 'mosaic', 'vortex', 'cascade', 'explode', 'kaleidoscope']), 
               help='Animation type to use (overrides config)')
 @click.option('--skip-hi-res', is_flag=True, help='Skip generating high-resolution MP4')
 @click.option('--skip-low-res', is_flag=True, help='Skip generating 480p low-resolution MP4')
