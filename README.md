@@ -41,13 +41,17 @@ pip install -e .
 
 ## Quick Start
 
-1. Initialize a configuration file:
+1. Create a configuration file by copying the example:
 
 ```bash
+# Copy the example config
+cp config.py.example config.py
+
+# Or initialize a new one
 jellytools init
 ```
 
-2. Edit the generated `config.py` file with your Jellyfin/Plex server details
+2. Edit the `config.py` file with your Jellyfin/Plex server details (this file is gitignored for security)
 
 3. Generate library card animations:
 
