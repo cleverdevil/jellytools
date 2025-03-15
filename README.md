@@ -178,6 +178,7 @@ By default, `jellytools sync` will:
 - Clean existing collections in Jellyfin
 - Create new collections in Jellyfin based on Plex collections
 - Sync all artwork types (posters, backdrops, banners) for all media
+- Skip previously synced items (incremental sync using tags)
 
 ```bash
 # Sync everything (default behavior)
@@ -200,6 +201,9 @@ jellytools sync --clean-only
 
 # Sync all artwork but skip collections
 jellytools sync --skip-collections --sync-images --all-artwork
+
+# Force sync all items (ignores the sync tags)
+jellytools sync --force
 ```
 
 ### Command-line Options
@@ -229,6 +233,7 @@ Sync Command Options:
   --all-artwork/--primary-only    Sync all artwork types including backdrops and banners [default: all artwork]
   --sync-collections/--skip-collections  Sync collections from Plex to Jellyfin [default: sync collections]
   --clean-collections/--preserve-collections  Clean existing collections before syncing [default: clean collections]
+  --force                         Force sync all items even if previously synced [default: incremental sync]
   --clean-only                    Only clean existing collections without creating new ones
 ```
 

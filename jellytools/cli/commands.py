@@ -888,12 +888,17 @@ def generate_js(ctx, output, replay, hide_labels):
     help="Clean existing Jellyfin collections before syncing [default: clean collections]"
 )
 @click.option(
+    "--force",
+    is_flag=True,
+    help="Force sync all items even if they've been previously synced"
+)
+@click.option(
     "--clean-only",
     is_flag=True,
     help="Only clean existing collections without creating new ones or syncing artwork"
 )
 @click.pass_context
-def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, clean_only):
+def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, force, clean_only):
     """Sync collections and artwork from Plex to Jellyfin
     
     By default, this command will:
@@ -928,6 +933,7 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, cle
     click.echo(f"- {'Syncing' if sync_collections else 'Skipping'} collections")
     if sync_collections:
         click.echo(f"- {'Cleaning' if clean_collections else 'Preserving'} existing collections")
+    click.echo(f"- {'Force' if force else 'Incremental'} sync mode")
 
     # Handle clean-only mode
     if clean_only:
@@ -962,7 +968,8 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, cle
         server_manager,
         clean_collections=clean_collections and sync_collections,
         sync_images=not skip_images,
-        sync_all_artwork=all_artwork
+        sync_all_artwork=all_artwork,
+        force_sync=force
     )
 
     # Restore original function if it was patched
