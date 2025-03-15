@@ -173,13 +173,24 @@ def render_animation(
 
     # Save the last frame as PNG thumbnails if requested
     if save_last_frame and last_frame_data is not None:
+        # Extract base naming components
+        filename_parts = os.path.basename(output_filename).split('_')
+        library_name = filename_parts[0]
+        animation_name = filename_parts[1]
+        
         # Save high-res thumbnail
-        thumbnail_path = output_filename.replace(".mp4", "_thumbnail.png")
+        thumbnail_path = os.path.join(
+            os.path.dirname(output_filename),
+            f"{library_name}_{animation_name}_thumbnail_2k.png"
+        )
         cv2.imwrite(thumbnail_path, last_frame_data)
         logger.info(f"High-res thumbnail saved to {thumbnail_path}")
 
         # Generate low-res thumbnail (480p)
-        low_res_thumbnail_path = output_filename.replace(".mp4", "_thumbnail_480p.png")
+        low_res_thumbnail_path = os.path.join(
+            os.path.dirname(output_filename),
+            f"{library_name}_{animation_name}_thumbnail_480p.png"
+        )
         low_res_frame = cv2.resize(last_frame_data, (854, 480))
         cv2.imwrite(low_res_thumbnail_path, low_res_frame)
         logger.info(f"Low-res thumbnail saved to {low_res_thumbnail_path}")
@@ -210,8 +221,20 @@ def generate_low_res_video(
     import subprocess
     import os
 
-    # Generate output filename
-    output_filename = input_filename.replace("_hi_res.mp4", "_low_res.mp4")
+    # Extract base naming components from input filename
+    filename_parts = os.path.basename(input_filename).split('_')
+    if len(filename_parts) >= 3:
+        library_name = filename_parts[0]
+        animation_name = filename_parts[1]
+        
+        # Generate output filename with consistent naming pattern
+        output_filename = os.path.join(
+            os.path.dirname(input_filename), 
+            f"{library_name}_{animation_name}_video_480p.mp4"
+        )
+    else:
+        # Fallback if the input filename format doesn't match expected pattern
+        output_filename = input_filename.replace("_video_2k.mp4", "_video_480p.mp4")
 
     # Run ffmpeg to convert the video to low resolution
     try:
@@ -404,7 +427,7 @@ def generate(
                 click.echo(f"Creating high-resolution {lib_animation_type} animation")
                 output_filename = os.path.join(
                     output_dir,
-                    f"{library_name}_{lib_animation_type}_animation_hi_res.mp4",
+                    f"{library_name}_{lib_animation_type}_video_2k.mp4",
                 )
 
                 output_files = render_animation(
@@ -446,7 +469,7 @@ def generate(
                 # Look for existing high-res file
                 potential_file = os.path.join(
                     output_dir,
-                    f"{library_name}_{lib_animation_type}_animation_hi_res.mp4",
+                    f"{library_name}_{lib_animation_type}_video_2k.mp4",
                 )
                 if os.path.exists(potential_file):
                     hi_res_output = potential_file
