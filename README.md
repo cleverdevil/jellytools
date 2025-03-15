@@ -262,6 +262,10 @@ To use the generated JavaScript with Jellyfin, you need to install the Custom Ja
 5. Save the settings
 6. Refresh your Jellyfin interface
 
+## Credits
+
+This project was developed by [Jonathan LaCour](https://cleverdevil.io) in collaboration with [Claude Code](https://claude.ai/code).
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
