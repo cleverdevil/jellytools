@@ -29,6 +29,9 @@ output/
 *.jpg
 *.jpeg
 
+# But allow examples
+!examples/*.mp4
+
 # Logs
 *.log
 
