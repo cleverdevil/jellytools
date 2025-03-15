@@ -59,18 +59,31 @@ class PosterSpinAnimation(BaseAnimation):
             poster_width = max(max(p.get_width() for p in posters), 1)
             poster_height = max(max(p.get_height() for p in posters), 1)
         
-        # Create a grid that fills more of the viewport
-        # Use more of the screen to eliminate gaps
-        visible_grid_width = WIDTH * 1.2  # Extend beyond viewport width to remove side gaps
-        visible_grid_height = HEIGHT * 1.3  # Extend beyond viewport height to remove top gap
+        # Account for the final scale we'll apply to posters (2.0x)
+        # Need to use the scaled dimensions for grid calculations to prevent overlap
+        scaled_poster_width = poster_width * 2.0
+        scaled_poster_height = poster_height * 2.0
         
-        # Calculate how many posters can fit in the visible area
-        cols = max(8, int(visible_grid_width / poster_width))
-        rows = max(6, int(visible_grid_height / poster_height))
+        # Add spacing between grid cells to prevent overlap
+        spacing = 20
+        cell_width = scaled_poster_width + spacing
+        cell_height = scaled_poster_height + spacing
+        
+        # Create a grid that extends beyond screen edges to ensure no gaps
+        # We want to cover the entire screen plus a margin
+        margin = cell_width  # Add one cell width as margin on each side
+        
+        # Calculate grid size that extends beyond screen edges
+        total_width = WIDTH + 2 * margin
+        total_height = HEIGHT + 2 * margin
+        
+        # Calculate how many columns and rows needed to fill (and exceed) screen
+        cols = math.ceil(total_width / cell_width) + 1  # Add extra column for safety
+        rows = math.ceil(total_height / cell_height) + 1  # Add extra row for safety
         
         # Calculate total grid size
-        grid_width = cols * poster_width
-        grid_height = rows * poster_height
+        grid_width = cols * cell_width
+        grid_height = rows * cell_height
         
         # Grid origin (top-left corner position) - center in viewport
         # Shift upward to eliminate top gap
@@ -82,6 +95,10 @@ class PosterSpinAnimation(BaseAnimation):
         return {
             'poster_width': poster_width,
             'poster_height': poster_height,
+            'scaled_poster_width': scaled_poster_width,
+            'scaled_poster_height': scaled_poster_height,
+            'cell_width': cell_width,
+            'cell_height': cell_height,
             'cols': cols,
             'rows': rows,
             'grid_width': grid_width,
@@ -105,34 +122,47 @@ class PosterSpinAnimation(BaseAnimation):
         if not posters:
             return posters_data
         
-        # Limit the number of posters to avoid performance issues
-        max_posters = min(300, len(posters))
+        # Calculate total cells in the grid
+        total_cells = self.grid_params['cols'] * self.grid_params['rows']
         
-        # Triple the initial poster size as requested
-        small_scale = 0.75  # Increased from 0.25 (tripled)
+        # Ensure we have enough posters to fill all cells by repeating if needed
+        available_posters = posters * (math.ceil(total_cells / max(1, len(posters))))
         
-        # Spacing between posters in the horizontal line
-        # Increase spacing to accommodate larger posters
-        spacing = 60  # Increased from 20
+        # Use as many posters as possible while capping at a high but reasonable number
+        max_posters = min(1000, total_cells, len(available_posters))
         
-        # Horizontal line will be centered on the screen
+        logger.info(f"Creating spiral with grid {self.grid_params['cols']}x{self.grid_params['rows']} = {total_cells} cells")
+        logger.info(f"Using {max_posters} posters (repeating if needed)")
+        
+        # Set the initial poster size 50% larger
+        initial_scale = 1.5  # 50% larger than normal (1.0)
+        
+        # Adjust the spacing based on the number of posters
+        # If we have a lot of posters, make the spacing smaller to keep things manageable
+        if max_posters > 300:
+            spacing = 40  # Smaller spacing for large number of posters
+        elif max_posters > 100:
+            spacing = 60  # Medium spacing for medium number of posters
+        else:
+            spacing = 80  # Larger spacing for smaller number of posters
+        
+        # Horizontal line will be centered on the screen, but use virtual width
+        # that's larger than screen to ensure we have posters coming in from outside view
+        virtual_width = WIDTH * 1.5  # Make the line wider than the screen
         line_width = max_posters * spacing
-        line_start_x = (WIDTH - line_width) / 2
+        line_start_x = (virtual_width - line_width) / 2 - WIDTH * 0.25  # Shift left to have posters come from left
         line_y = HEIGHT / 2
         
         # Process each poster
         for i in range(max_posters):
-            if i >= len(posters):
-                break
-                
-            poster = posters[i]
+            poster = available_posters[i]
             
-            # Scale down the poster for the initial line and spiral
-            scaled_width = int(poster.get_width() * small_scale)
-            scaled_height = int(poster.get_height() * small_scale)
+            # Scale the poster for the initial line and spiral
+            scaled_width = int(poster.get_width() * initial_scale)
+            scaled_height = int(poster.get_height() * initial_scale)
             
             try:
-                small_poster = pygame.transform.smoothscale(poster, (scaled_width, scaled_height))
+                scaled_poster = pygame.transform.smoothscale(poster, (scaled_width, scaled_height))
             except pygame.error:
                 continue
             
@@ -144,23 +174,24 @@ class PosterSpinAnimation(BaseAnimation):
             grid_row = cell_idx // self.grid_params['cols']
             grid_col = cell_idx % self.grid_params['cols']
             
+            # Calculate position for cell center with spacing accounted for
             grid_x = (self.grid_params['grid_origin_x'] + 
-                      grid_col * self.grid_params['poster_width'] + 
-                      self.grid_params['poster_width'] / 2)
+                      grid_col * self.grid_params['cell_width'] + 
+                      self.grid_params['cell_width'] / 2)
             
             grid_y = (self.grid_params['grid_origin_y'] + 
-                      grid_row * self.grid_params['poster_height'] + 
-                      self.grid_params['poster_height'] / 2)
+                      grid_row * self.grid_params['cell_height'] + 
+                      self.grid_params['cell_height'] / 2)
             
             # Calculate spiral parameters
             # Each poster will move along a spiral path from the line to its spiral position
             # We'll use the Archimedean spiral formula: r = a + b * theta
-            max_spiral_radius = min(WIDTH, HEIGHT) * 0.4
+            max_spiral_radius = min(WIDTH, HEIGHT) * 0.6  # Larger spiral radius
             spiral_a = 10  # Initial radius
-            spiral_b = max_spiral_radius / (2 * math.pi * 10)  # Growth rate
+            spiral_b = max_spiral_radius / (2 * math.pi * 15)  # Growth rate for more spiral turns
             
             # Angle in the spiral (distributed evenly)
-            spiral_angle = (i / max_posters) * 2 * math.pi * 8  # 8 full rotations
+            spiral_angle = (i / max_posters) * 2 * math.pi * 12  # 12 full rotations for more complexity
             
             # Distance from center (spiral radius)
             spiral_radius = spiral_a + spiral_b * spiral_angle
@@ -171,7 +202,7 @@ class PosterSpinAnimation(BaseAnimation):
             
             poster_data = {
                 'poster': poster,
-                'small_poster': small_poster,
+                'scaled_poster': scaled_poster,
                 'line_x': line_x,
                 'line_y': line_y,
                 'spiral_x': spiral_x,
@@ -182,9 +213,9 @@ class PosterSpinAnimation(BaseAnimation):
                 'grid_y': grid_y,
                 'current_x': line_x,
                 'current_y': line_y,
-                'small_scale': small_scale,
-                'full_scale': 1.0,  # Final scale for grid view, matching the grid animation
-                'current_scale': small_scale,
+                'initial_scale': initial_scale,
+                'full_scale': 2.0,  # Final scale for grid view (double normal size)
+                'current_scale': initial_scale,
                 'rotation': 0,
                 'current_rotation': 0,
                 'opacity': 255,
@@ -239,8 +270,8 @@ class PosterSpinAnimation(BaseAnimation):
                 poster['current_x'] = poster['spiral_x'] + (poster['grid_x'] - poster['spiral_x']) * eased_progress
                 poster['current_y'] = poster['spiral_y'] + (poster['grid_y'] - poster['spiral_y']) * eased_progress
                 
-                # Scale up from small to full size
-                poster['current_scale'] = poster['small_scale'] + (poster['full_scale'] - poster['small_scale']) * eased_progress
+                # Scale up from initial to full size
+                poster['current_scale'] = poster['initial_scale'] + (poster['full_scale'] - poster['initial_scale']) * eased_progress
                 
                 # Gradually rotate to 0 degrees
                 start_rotation = poster['spiral_angle'] * 180 / math.pi
@@ -287,15 +318,13 @@ class PosterSpinAnimation(BaseAnimation):
         
         # Draw each poster
         for poster in sorted_posters:
-            # Determine scale threshold for using small or original poster
-            scale_threshold = 0.5
-            
-            if poster['current_scale'] < scale_threshold:
-                # Use pre-scaled small version for efficiency when poster is small
-                base_img = poster['small_poster']
+            # Use the pre-scaled poster as a base reference
+            if 1.0 <= poster['current_scale'] <= poster['initial_scale'] + 0.1:
+                # If current scale is close to the initial scale, use pre-scaled version
+                base_img = poster['scaled_poster']
                 
-                # Calculate adjustment factor for small poster
-                scale_adjust = poster['current_scale'] / poster['small_scale']
+                # Calculate adjustment factor for scaled poster
+                scale_adjust = poster['current_scale'] / poster['initial_scale']
                 
                 if abs(scale_adjust - 1.0) > 0.01:  # Only rescale if significantly different
                     try:
@@ -307,7 +336,7 @@ class PosterSpinAnimation(BaseAnimation):
                 else:
                     img = base_img
             else:
-                # Use original poster with scaling for better quality when poster is larger
+                # For other scales, use original poster with direct scaling
                 base_img = poster['poster']
                 
                 try:

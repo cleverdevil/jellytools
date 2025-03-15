@@ -17,7 +17,6 @@ from jellytools.cli.syncing import sync_collections
 from jellytools.animations.base import AnimationManager, WIDTH, HEIGHT, FPS, TOTAL_ANIMATION_TIME
 from jellytools.animations import (
     PosterGridAnimation, 
-    PosterMosaicAnimation, 
     PosterSpinAnimation, 
     PosterWaterfallAnimation
 )
@@ -38,7 +37,6 @@ def register_animations(animation_manager: AnimationManager) -> None:
     """
     animation_manager.register_animation('grid', PosterGridAnimation)
     animation_manager.register_animation('waterfall', PosterWaterfallAnimation)
-    animation_manager.register_animation('mosaic', PosterMosaicAnimation)
     animation_manager.register_animation('spiral', PosterSpinAnimation)
 
 
@@ -152,19 +150,72 @@ def render_animation(
     video.release()
     logger.info(f"Animation rendered to {output_filename}")
     
-    # Save the last frame as a PNG if requested
+    # Save the last frame as PNG thumbnails if requested
     if save_last_frame and last_frame_data is not None:
+        # Save high-res thumbnail
         thumbnail_path = output_filename.replace('.mp4', '_thumbnail.png')
         cv2.imwrite(thumbnail_path, last_frame_data)
-        logger.info(f"Thumbnail saved to {thumbnail_path}")
+        logger.info(f"High-res thumbnail saved to {thumbnail_path}")
+        
+        # Generate low-res thumbnail (480p)
+        low_res_thumbnail_path = output_filename.replace('.mp4', '_thumbnail_480p.png')
+        low_res_frame = cv2.resize(last_frame_data, (854, 480))
+        cv2.imwrite(low_res_thumbnail_path, low_res_frame)
+        logger.info(f"Low-res thumbnail saved to {low_res_thumbnail_path}")
     
     return {
         'video': output_filename,
-        'thumbnail': thumbnail_path
+        'thumbnail': thumbnail_path,
+        'thumbnail_480p': low_res_thumbnail_path if save_last_frame and last_frame_data is not None else None
     }
 
 
-# Function for generating web versions (GIF/APNG) has been removed
+def generate_low_res_video(input_filename: str, width: int = 854, height: int = 480) -> str:
+    """
+    Generate a low-resolution version of the video using ffmpeg.
+    
+    Args:
+        input_filename (str): Path to the high-resolution video
+        width (int): Target width (default: 854)
+        height (int): Target height (default: 480)
+        
+    Returns:
+        str: Path to the generated low-resolution video, or None if failed
+    """
+    import subprocess
+    import os
+    
+    # Generate output filename
+    output_filename = input_filename.replace('_hi_res.mp4', '_low_res.mp4')
+    
+    # Run ffmpeg to convert the video to low resolution
+    try:
+        logger.info(f"Generating low-resolution 480p version of {input_filename}")
+        cmd = [
+            'ffmpeg', 
+            '-y',  # Overwrite output file if it exists
+            '-i', input_filename,  # Input file
+            '-vf', f'scale={width}:{height}',  # Scale video
+            '-c:v', 'libx264',  # Use H.264 codec
+            '-crf', '23',  # Quality setting (lower = better quality, higher = smaller file)
+            '-preset', 'medium',  # Encoding speed/compression trade-off
+            '-c:a', 'copy',  # Copy audio stream without re-encoding
+            output_filename
+        ]
+        
+        # Use subprocess.run to execute the command
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Check if the command was successful
+        if result.returncode == 0:
+            logger.info(f"Low-resolution video generated successfully: {output_filename}")
+            return output_filename
+        else:
+            logger.error(f"Failed to generate low-resolution video: {result.stderr}")
+            return None
+    except Exception as e:
+        logger.error(f"Error generating low-resolution video: {e}")
+        return None
 
 
 @click.group()
@@ -201,14 +252,15 @@ def init(file):
 
 @cli.command()
 @click.option('--animation-type', '-a', 
-              type=click.Choice(['grid', 'waterfall', 'mosaic', 'spiral']), 
+              type=click.Choice(['grid', 'waterfall', 'spiral']), 
               help='Animation type to use (overrides config)')
 @click.option('--skip-hi-res', is_flag=True, help='Skip generating high-resolution MP4')
+@click.option('--skip-low-res', is_flag=True, help='Skip generating 480p low-resolution MP4')
 @click.option('--skip-download', is_flag=True, help='Skip downloading posters from servers')
 @click.option('--skip-thumbnails', is_flag=True, help='Skip generating PNG thumbnails of the last frame')
 @click.option('--output-dir', '-o', help='Output directory for videos')
 @click.pass_context
-def generate(ctx, animation_type, skip_hi_res, skip_download, skip_thumbnails, output_dir):
+def generate(ctx, animation_type, skip_hi_res, skip_low_res, skip_download, skip_thumbnails, output_dir):
     """Generate library card animations"""
     # Check dependencies first
     if not Utils.check_dependencies():
@@ -290,9 +342,24 @@ def generate(ctx, animation_type, skip_hi_res, skip_download, skip_thumbnails, o
                 thumbnail = output_files['thumbnail']
                 
                 if thumbnail:
-                    click.echo(f"Thumbnail saved to: {thumbnail}")
+                    click.echo(f"High-res thumbnail saved to: {thumbnail}")
+                    
+                if output_files.get('thumbnail_480p'):
+                    click.echo(f"Low-res thumbnail saved to: {output_files['thumbnail_480p']}")
                 
                 outputs.append(hi_res_output)
+                
+                # Generate low-resolution version if requested
+                if not skip_low_res:
+                    click.echo(f"Generating 480p low-resolution version...")
+                    low_res_output = generate_low_res_video(hi_res_output)
+                    if low_res_output:
+                        click.echo(f"Low-resolution video saved to: {os.path.basename(low_res_output)}")
+                        outputs.append(low_res_output)
+                    else:
+                        click.echo("Failed to generate low-resolution video.")
+                else:
+                    click.echo("Skipping low-resolution video generation.")
             else:
                 click.echo("Skipping high-resolution animation generation.")
                 # Look for existing high-res file
