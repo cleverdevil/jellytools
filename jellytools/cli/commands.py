@@ -606,8 +606,18 @@ def animations(ctx):
     default="jellyfin-override.js",
     help="Output file for the JavaScript (default: jellyfin-override.js)"
 )
+@click.option(
+    "--replay/--no-replay",
+    default=False,
+    help="Allow videos to replay each time the element is hovered over (default: false)"
+)
+@click.option(
+    "--hide-labels/--show-labels",
+    default=True,
+    help="Hide the text labels for library cards (default: true)"
+)
 @click.pass_context
-def generate_js(ctx, output):
+def generate_js(ctx, output, replay, hide_labels):
     """Generate JavaScript for the Jellyfin Custom JavaScript Plugin that adds hover-triggered videos to library cards"""
     config = ctx.obj["config"]
     
@@ -620,6 +630,8 @@ def generate_js(ctx, output):
         return 1
     
     click.echo("\n=== Generating JavaScript for Jellyfin Custom JavaScript Plugin ===\n")
+    click.echo(f"Video replay on hover: {'Enabled' if replay else 'Disabled'}")
+    click.echo(f"Hide text labels: {'Enabled' if hide_labels else 'Disabled'}")
     
     # Get libraries from Jellyfin
     library_result = jellyfin_client.libraries_list()
@@ -670,6 +682,11 @@ def generate_js(ctx, output):
             f.write("// Self-executing function to avoid global namespace pollution\n")
             f.write("(function() {\n")
             f.write("  // Configuration\n")
+            f.write("  const config = {\n")
+            f.write(f"    allowReplay: {str(replay).lower()},  // Allow videos to replay on hover\n")
+            f.write(f"    hideLabels: {str(hide_labels).lower()}   // Hide the text labels for library cards\n")
+            f.write("  };\n")
+            f.write("\n")
             f.write("  const libraries = [\n")
             
             # Add each library
@@ -722,19 +739,32 @@ def generate_js(ctx, output):
             f.write("    // Find the card indicators\n")
             f.write("    const cardIndicators = element.querySelector('.cardIndicators');\n")
             f.write("    \n")
-            f.write("    // Track if the video has played\n")
-            f.write("    video.hasPlayed = false;\n")
-            f.write("\n")
+            if not replay:
+                f.write("    // Track if the video has played\n")
+                f.write("    video.hasPlayed = false;\n")
+                f.write("\n")
+            
             f.write("    // Add hover event listener\n")
             f.write("    element.parentElement.addEventListener('mouseenter', function() {\n")
-            f.write("      if (video.paused && !video.hasPlayed) {\n")
-            f.write("        video.style.opacity = '1';\n")
-            f.write("        element.style.backgroundImage = 'none';\n")
-            f.write("        if (cardIndicators) cardIndicators.style.opacity = '0';\n")
-            f.write("        video.currentTime = 0;\n")
-            f.write("        video.play().catch(() => {});\n")
-            f.write("        video.hasPlayed = true;\n")
-            f.write("      }\n")
+            
+            if replay:
+                # When replay is enabled, always play the video on mouseenter
+                f.write("      video.style.opacity = '1';\n")
+                f.write("      element.style.backgroundImage = 'none';\n")
+                f.write("      if (cardIndicators) cardIndicators.style.opacity = '0';\n")
+                f.write("      video.currentTime = 0;\n")
+                f.write("      video.play().catch(() => {});\n")
+            else:
+                # When replay is disabled, only play if it hasn't played before
+                f.write("      if (video.paused && !video.hasPlayed) {\n")
+                f.write("        video.style.opacity = '1';\n")
+                f.write("        element.style.backgroundImage = 'none';\n")
+                f.write("        if (cardIndicators) cardIndicators.style.opacity = '0';\n")
+                f.write("        video.currentTime = 0;\n")
+                f.write("        video.play().catch(() => {});\n")
+                f.write("        video.hasPlayed = true;\n")
+                f.write("      }\n")
+            
             f.write("    });\n")
             f.write("  }\n")
             f.write("\n")
@@ -750,10 +780,15 @@ def generate_js(ctx, output):
             f.write("        const element = card.querySelector('a.cardImageContainer');\n")
             f.write("        \n")
             f.write("        if (element) {\n")
-            f.write("          // Hide the label\n")
-            f.write("          const textElement = element.parentElement.parentElement.querySelector('.cardText');\n")
-            f.write("          if (textElement) textElement.style.display = 'none';\n")
-            f.write("          \n")
+            
+            # Only hide labels if configured to do so
+            if hide_labels:
+                f.write("          // Hide the label if configured to do so\n")
+                f.write("          if (config.hideLabels) {\n")
+                f.write("            const textElement = element.parentElement.parentElement.querySelector('.cardText');\n")
+                f.write("            if (textElement) textElement.style.display = 'none';\n")
+                f.write("          }\n")
+            
             f.write("          // Set up video\n")
             f.write("          replaceWithVideo(element, library.VideoURL);\n")
             f.write("        } else {\n")
@@ -805,9 +840,24 @@ def generate_js(ctx, output):
         
         click.echo("\nThe JavaScript will add hidden videos to Jellyfin library cards while maintaining their original appearance.")
         click.echo("The videos will play when a user hovers over a library card.")
-        click.echo("Each video will play only once per page load.")
+        
+        if replay:
+            click.echo("Videos will replay each time a user hovers over a card.")
+        else:
+            click.echo("Each video will play only once per page load.")
+            
+        if hide_labels:
+            click.echo("Text labels for library cards will be hidden to provide a cleaner video experience.")
+        else:
+            click.echo("Text labels for library cards will remain visible.")
+            
         click.echo("\nYou can now paste this JavaScript into the Jellyfin Custom JavaScript Plugin settings.")
         click.echo("Plugin URL: https://github.com/johnpc/jellyfin-plugin-custom-javascript")
+        
+        click.echo("\nTo regenerate with different options, use:")
+        replay_option = "--replay" if replay else "--no-replay"
+        labels_option = "--hide-labels" if hide_labels else "--show-labels"
+        click.echo(f"jellytools generate-js {replay_option} {labels_option}")
         
         return 0
         
