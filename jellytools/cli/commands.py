@@ -600,6 +600,223 @@ def animations(ctx):
 
 
 @cli.command()
+@click.option(
+    "--output", "-o", 
+    type=click.Path(), 
+    default="jellyfin-override.js",
+    help="Output file for the JavaScript (default: jellyfin-override.js)"
+)
+@click.pass_context
+def generate_js(ctx, output):
+    """Generate JavaScript for the Jellyfin Custom JavaScript Plugin that adds hover-triggered videos to library cards"""
+    config = ctx.obj["config"]
+    
+    # Initialize server manager to connect to Jellyfin
+    server_manager = ServerManager()
+    jellyfin_client = server_manager.get_jellyfin_client()
+    
+    if not jellyfin_client:
+        click.echo("Error: Jellyfin server not configured or connection failed")
+        return 1
+    
+    click.echo("\n=== Generating JavaScript for Jellyfin Custom JavaScript Plugin ===\n")
+    
+    # Get libraries from Jellyfin
+    library_result = jellyfin_client.libraries_list()
+    libraries = library_result.get("Items", [])
+    
+    if not libraries:
+        click.echo("Error: No libraries found on Jellyfin server")
+        return 1
+    
+    # Store libraries for JS generation
+    js_libraries = []
+    
+    # Process each library
+    for library in libraries:
+        library_name = library.get("Name")
+        library_id = library.get("Id")
+        
+        # Skip if no ID
+        if not library_id:
+            continue
+            
+        # Ask user for video URL for this library
+        video_url = click.prompt(
+            f"Enter video URL for library '{library_name}' (press Enter to skip)", 
+            default=""
+        )
+        
+        # Skip if no URL provided
+        if not video_url:
+            click.echo(f"Skipping library '{library_name}'")
+            continue
+            
+        # Add to our libraries list
+        js_libraries.append({
+            "Name": library_name,
+            "Id": library_id,
+            "VideoURL": video_url
+        })
+    
+    if not js_libraries:
+        click.echo("No libraries selected for JavaScript generation")
+        return 1
+    
+    # Generate JavaScript file
+    try:
+        with open(output, "w") as f:
+            # Write the template JavaScript with the libraries configuration
+            f.write("// Self-executing function to avoid global namespace pollution\n")
+            f.write("(function() {\n")
+            f.write("  // Configuration\n")
+            f.write("  const libraries = [\n")
+            
+            # Add each library
+            for i, library in enumerate(js_libraries):
+                f.write(f"    {{\n")
+                f.write(f'      Id: "{library["Id"]}",\n')
+                f.write(f'      VideoURL: "{library["VideoURL"]}"\n')
+                f.write(f"    }}{'' if i == len(js_libraries) - 1 else ','}\n")
+            
+            f.write("  ];\n")
+            f.write("\n")
+            f.write("  // Constants\n")
+            f.write("  const checkInterval = 100; // Check every 100ms\n")
+            f.write("  const maxAttempts = 100;   // Try for ~10 seconds max (100 * 100ms)\n")
+            f.write("\n")
+            f.write("  // Clone the array to track which libraries still need processing\n")
+            f.write("  let pendingLibraries = [...libraries];\n")
+            f.write("  let attempts = 0;\n")
+            f.write("\n")
+            f.write("  // Function to set up hover video for element\n")
+            f.write("  function replaceWithVideo(element, videoUrl) {\n")
+            f.write("    // Check if the element already has a video (avoid duplicates)\n")
+            f.write("    if (element.querySelector('video')) return;\n")
+            f.write("\n")
+            f.write("    // Create and configure video element\n")
+            f.write("    const video = document.createElement('video');\n")
+            f.write("    Object.assign(video, {\n")
+            f.write("      src: videoUrl,\n")
+            f.write("      muted: true,\n")
+            f.write("      playsInline: true,\n")
+            f.write("      preload: 'auto'\n")
+            f.write("    });\n")
+            f.write("\n")
+            f.write("    // Style the video\n")
+            f.write("    Object.assign(video.style, {\n")
+            f.write("      position: 'absolute',\n")
+            f.write("      top: '0',\n")
+            f.write("      left: '0',\n")
+            f.write("      width: '100%',\n")
+            f.write("      height: '100%',\n")
+            f.write("      objectFit: 'cover',\n")
+            f.write("      opacity: '0',\n")
+            f.write("      transition: 'opacity 0.3s ease-in-out',\n")
+            f.write("      zIndex: '1000'\n")
+            f.write("    });\n")
+            f.write("\n")
+            f.write("    // Insert the video but keep background image visible\n")
+            f.write("    element.insertBefore(video, element.firstChild);\n")
+            f.write("\n")
+            f.write("    // Find the card indicators\n")
+            f.write("    const cardIndicators = element.querySelector('.cardIndicators');\n")
+            f.write("    \n")
+            f.write("    // Track if the video has played\n")
+            f.write("    video.hasPlayed = false;\n")
+            f.write("\n")
+            f.write("    // Add hover event listener\n")
+            f.write("    element.parentElement.addEventListener('mouseenter', function() {\n")
+            f.write("      if (video.paused && !video.hasPlayed) {\n")
+            f.write("        video.style.opacity = '1';\n")
+            f.write("        element.style.backgroundImage = 'none';\n")
+            f.write("        if (cardIndicators) cardIndicators.style.opacity = '0';\n")
+            f.write("        video.currentTime = 0;\n")
+            f.write("        video.play().catch(() => {});\n")
+            f.write("        video.hasPlayed = true;\n")
+            f.write("      }\n")
+            f.write("    });\n")
+            f.write("  }\n")
+            f.write("\n")
+            f.write("  // Function to check for each target element\n")
+            f.write("  function checkForElements() {\n")
+            f.write("    const stillPending = [];\n")
+            f.write("\n")
+            f.write("    // Check each pending library\n")
+            f.write("    pendingLibraries.forEach(library => {\n")
+            f.write("      const card = document.querySelector('div[data-id=\"' + library.Id + '\"]');\n")
+            f.write("      \n")
+            f.write("      if (card) {\n")
+            f.write("        const element = card.querySelector('a.cardImageContainer');\n")
+            f.write("        \n")
+            f.write("        if (element) {\n")
+            f.write("          // Hide the label\n")
+            f.write("          const textElement = element.parentElement.parentElement.querySelector('.cardText');\n")
+            f.write("          if (textElement) textElement.style.display = 'none';\n")
+            f.write("          \n")
+            f.write("          // Set up video\n")
+            f.write("          replaceWithVideo(element, library.VideoURL);\n")
+            f.write("        } else {\n")
+            f.write("          stillPending.push(library);\n")
+            f.write("        }\n")
+            f.write("      } else {\n")
+            f.write("        stillPending.push(library);\n")
+            f.write("      }\n")
+            f.write("    });\n")
+            f.write("\n")
+            f.write("    // Update pending libraries list\n")
+            f.write("    pendingLibraries = stillPending;\n")
+            f.write("    \n")
+            f.write("    // Return whether all elements were found\n")
+            f.write("    return pendingLibraries.length === 0;\n")
+            f.write("  }\n")
+            f.write("\n")
+            f.write("  // Start polling when the document is ready\n")
+            f.write("  function startPolling() {\n")
+            f.write("    // First, immediately check if all elements exist\n")
+            f.write("    if (checkForElements()) return;\n")
+            f.write("\n")
+            f.write("    // Set up interval to check periodically\n")
+            f.write("    const intervalId = setInterval(() => {\n")
+            f.write("      attempts++;\n")
+            f.write("\n")
+            f.write("      if (checkForElements()) {\n")
+            f.write("        // All elements found\n")
+            f.write("        clearInterval(intervalId);\n")
+            f.write("      } else if (attempts >= maxAttempts) {\n")
+            f.write("        // Max attempts reached\n")
+            f.write("        clearInterval(intervalId);\n")
+            f.write("      }\n")
+            f.write("    }, checkInterval);\n")
+            f.write("  }\n")
+            f.write("\n")
+            f.write("  // Initialize the script\n")
+            f.write("  if (document.readyState === 'loading') {\n")
+            f.write("    document.addEventListener('DOMContentLoaded', startPolling);\n")
+            f.write("  } else {\n")
+            f.write("    startPolling();\n")
+            f.write("  }\n")
+            f.write("})();\n")
+        
+        click.echo(f"\nJavaScript successfully generated to {output}")
+        click.echo(f"\nLibraries included in the JavaScript:")
+        for library in js_libraries:
+            click.echo(f"- {library['Name']} (ID: {library['Id']})")
+        
+        click.echo("\nThe JavaScript will add hidden videos to Jellyfin library cards while maintaining their original appearance.")
+        click.echo("The videos will play when a user hovers over a library card.")
+        click.echo("Each video will play only once per page load.")
+        click.echo("\nYou can now paste this JavaScript into the Jellyfin Custom JavaScript Plugin settings.")
+        click.echo("Plugin URL: https://github.com/johnpc/jellyfin-plugin-custom-javascript")
+        
+        return 0
+        
+    except Exception as e:
+        click.echo(f"Error generating JavaScript: {e}")
+        return 1
+
+
+@cli.command()
 @click.option("--skip-images", is_flag=True, help="Skip syncing images (faster)")
 @click.option(
     "--clean-only",
