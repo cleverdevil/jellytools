@@ -1,0 +1,41 @@
+# Plex server configuration
+PLEX_URL = "http://your-plex-server:32400"
+PLEX_TOKEN = "your-plex-token"
+
+# Jellyfin server configuration
+JELLYFIN_URL = "http://your-jellyfin-server:8096"
+JELLYFIN_API_KEY = "your-jellyfin-api-key"
+
+# Libraries to process
+PLEX_LIBRARIES = ["Movies", "TV Shows"]
+JELLYFIN_LIBRARIES = ["Movies", "Shows", "Collections"]
+
+# General configuration
+POSTER_DIRECTORY = "posters"
+FONT_PATH = "./assets/font.ttf"
+CAPITALIZE_TEXT = True
+
+# Animation configuration
+DEFAULT_ANIMATION_TYPE = "grid"
+DEFAULT_OUTPUT_DIR = "output"
+
+# All animations
+ALL_ANIMATIONS = [
+    "grid",
+    "spiral",
+    "waterfall",
+    "cascade",
+    "kaleidoscope",
+    "explode",
+    "vortex",
+    "mosaic",
+    "shockwave",
+]
+
+# Per-library animation configuration
+# Define custom animation styles for each library
+LIBRARY_ANIMATIONS = {
+    "Movies": {"animation_types": ALL_ANIMATIONS},
+    "Shows": {"animation_types": ALL_ANIMATIONS},
+    "Collections": {"animation_types": ALL_ANIMATIONS},
+}
