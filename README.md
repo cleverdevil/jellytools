@@ -2,6 +2,12 @@
 
 A Python package for enhancing Jellyfin Media Servers.
 
+## Demo
+
+Watch how Jellytools transforms your Jellyfin interface with beautiful animated library cards:
+
+![Jellyfin Demo](https://github.com/cleverdevil/jellytools/raw/main/examples/demo.mp4)
+
 ## Features
 
 - Generate animated library cards from media posters in high-quality MP4 video format
@@ -209,47 +215,47 @@ Jellytools provides a variety of animations for your library cards:
 ### Grid
 A structured grid arrangement of posters with subtle movements.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/grid.mp4
+![Grid Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/grid.mp4)
 
 ### Waterfall
 Posters cascade from the top of the screen into a structured grid.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/waterfall.mp4
+![Waterfall Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/waterfall.mp4)
 
 ### Spiral
 Posters begin in a horizontal line, form a spiral, then transition to a grid.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/spiral.mp4
+![Spiral Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/spiral.mp4)
 
 ### Mosaic
 Creates a mosaic pattern that zooms and reveals.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/mosaic.mp4
+![Mosaic Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/mosaic.mp4)
 
 ### Vortex
 Posters swirl in a vortex pattern before arranging into a grid.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/vortex.mp4
+![Vortex Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/vortex.mp4)
 
 ### Cascade
 Posters cascade in from the sides in an alternating pattern.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/cascade.mp4
+![Cascade Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/cascade.mp4)
 
 ### Explode
 Posters explode outward from the center before organizing into a grid.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/explode.mp4
+![Explode Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/explode.mp4)
 
 ### Kaleidoscope
 A mesmerizing kaleidoscope effect with rotating poster patterns.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/kaleidoscope.mp4
+![Kaleidoscope Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/kaleidoscope.mp4)
 
 ### Shockwave
 Posters ripple in a shockwave pattern from the center.
 
-https://github.com/cleverdevil/jellytools/raw/main/examples/shockwave.mp4
+![Shockwave Animation](https://github.com/cleverdevil/jellytools/raw/main/examples/shockwave.mp4)
 
 ## Jellyfin Custom JavaScript Plugin
 
