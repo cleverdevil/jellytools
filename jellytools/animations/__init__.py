@@ -11,16 +11,4 @@ from jellytools.animations.vortex import PosterVortexAnimation
 from jellytools.animations.cascade import PosterCascadeAnimation
 from jellytools.animations.explode import PosterExplodeAnimation
 from jellytools.animations.kaleidoscope import PosterKaleidoscopeAnimation
-
-__all__ = [
-    "AnimationManager",
-    "BaseAnimation",
-    "PosterGridAnimation",
-    "PosterSpinAnimation",
-    "PosterWaterfallAnimation",
-    "PosterMosaicAnimation",
-    "PosterVortexAnimation",
-    "PosterCascadeAnimation", 
-    "PosterExplodeAnimation",
-    "PosterKaleidoscopeAnimation"
-]
+from jellytools.animations.shockwave import PosterShockwaveAnimation
