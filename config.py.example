@@ -7,6 +7,9 @@ JELLYFIN_URL = "http://your-jellyfin-server:8096"
 
 # Authentication options
 JELLYFIN_API_KEY = "your-jellyfin-api-key"
+# Alternative authentication method (use either API key or username/password)
+# JELLYFIN_USERNAME = "your-jellyfin-username"
+# JELLYFIN_PASSWORD = "your-jellyfin-password"
 
 # Libraries to process
 PLEX_LIBRARIES = ["Movies", "TV Shows"]

@@ -72,7 +72,11 @@ The configuration file (`config.py`) contains the following settings:
 ```python
 # Jellyfin server configuration (primary)
 JELLYFIN_URL = "http://localhost:8096"
+# Authentication options (use either API key or username/password)
 JELLYFIN_API_KEY = "your-jellyfin-api-key"
+# Alternative authentication
+# JELLYFIN_USERNAME = "your-jellyfin-username"
+# JELLYFIN_PASSWORD = "your-jellyfin-password"
 JELLYFIN_LIBRARIES = ["Movies", "TV Shows", "Collections"]
 
 # Plex server configuration (used for syncing)
@@ -178,8 +182,8 @@ By default, `jellytools sync` will:
 - Clean existing collections in Jellyfin
 - Create new collections in Jellyfin based on Plex collections
 - Sync all artwork types (posters, backdrops, banners) for all media
-- Skip previously synced items (incremental sync using tags)
-- Match items between Plex and Jellyfin using IMDb IDs when available, falling back to title matching when IDs aren't available
+- Skip previously synced items (incremental sync using SQLite database)
+- Match items between Plex and Jellyfin using IMDb IDs when available, with title-based matching as fallback for items without IMDb IDs
 
 ```bash
 # Sync everything (default behavior)
@@ -203,7 +207,7 @@ jellytools sync --clean-only
 # Sync all artwork but skip collections
 jellytools sync --skip-collections --sync-images --all-artwork
 
-# Force sync all items (ignores the sync tags)
+# Force sync all items (clears database and syncs everything)
 jellytools sync --force
 ```
 
@@ -234,7 +238,8 @@ Sync Command Options:
   --all-artwork/--primary-only    Sync all artwork types including backdrops and banners [default: all artwork]
   --sync-collections/--skip-collections  Sync collections from Plex to Jellyfin [default: sync collections]
   --clean-collections/--preserve-collections  Clean existing collections before syncing [default: clean collections]
-  --force                         Force sync all items even if previously synced [default: incremental sync]
+  --force                         Force sync all items by clearing sync database [default: incremental sync]
+  --verbose, -v                  Enable verbose logging output
   --clean-only                    Only clean existing collections without creating new ones
 ```
 
