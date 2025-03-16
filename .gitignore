@@ -30,6 +30,7 @@ output/
 *.jpeg
 config.py
 jellytools_sync.db
+jellyfin-override.js
 
 # But allow examples
 !examples/*.mp4
