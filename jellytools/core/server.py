@@ -34,11 +34,28 @@ class ServerManager:
             except Exception as e:
                 logger.error(f"Failed to connect to Plex: {e}")
 
-        if hasattr(config, "JELLYFIN_URL") and hasattr(config, "JELLYFIN_API_KEY"):
+        # Connect to Jellyfin - support both API key and username/password authentication
+        if hasattr(config, "JELLYFIN_URL"):
             logger.info(f"Connecting to Jellyfin at {config.JELLYFIN_URL}...")
             try:
-                self.servers["jellyfin"] = JellyfinClient(config.JELLYFIN_URL, config.JELLYFIN_API_KEY)
-                logger.info("Successfully connected to Jellyfin")
+                # First try API key auth
+                if hasattr(config, "JELLYFIN_API_KEY") and config.JELLYFIN_API_KEY:
+                    self.servers["jellyfin"] = JellyfinClient(
+                        url=config.JELLYFIN_URL, 
+                        api_key=config.JELLYFIN_API_KEY
+                    )
+                # Otherwise try username/password auth
+                elif hasattr(config, "JELLYFIN_USERNAME") and hasattr(config, "JELLYFIN_PASSWORD"):
+                    self.servers["jellyfin"] = JellyfinClient(
+                        url=config.JELLYFIN_URL, 
+                        username=config.JELLYFIN_USERNAME,
+                        password=config.JELLYFIN_PASSWORD
+                    )
+                else:
+                    logger.error("No valid Jellyfin credentials found. Need either API_KEY or USERNAME+PASSWORD")
+                    
+                if "jellyfin" in self.servers:
+                    logger.info("Successfully connected to Jellyfin")
             except Exception as e:
                 logger.error(f"Failed to connect to Jellyfin: {e}")
 

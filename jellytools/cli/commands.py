@@ -890,15 +890,18 @@ def generate_js(ctx, output, replay, hide_labels):
 @click.option(
     "--force",
     is_flag=True,
-    help="Force sync all items even if they've been previously synced"
+    help="Force sync all items even if they've been previously synced (clears sync database)"
 )
 @click.option(
     "--clean-only",
     is_flag=True,
     help="Only clean existing collections without creating new ones or syncing artwork"
 )
+@click.option(
+    "--verbose", "-v", is_flag=True, help="Enable verbose logging output"
+)
 @click.pass_context
-def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, force, clean_only):
+def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, force, clean_only, verbose):
     """Sync collections and artwork from Plex to Jellyfin
     
     By default, this command will:
@@ -925,6 +928,15 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, for
 
     click.echo("\n=== Starting Plex to Jellyfin Synchronization ===\n")
 
+    # Adjust logging levels for the sync process - reduce noise by setting higher threshold
+    # This is especially useful for the 404 errors when checking images
+    original_level = logging.getLogger().level
+    if not verbose:
+        # If not in verbose mode, only show warnings and above for the sync process
+        logging.getLogger().setLevel(logging.WARNING)
+        logging.getLogger("jellytools.api.jellyfin").setLevel(logging.WARNING)
+        logging.getLogger("jellytools.cli.syncing").setLevel(logging.INFO)  # Keep INFO for sync status
+    
     # Print sync configuration
     click.echo("Sync settings:")
     click.echo(f"- {'Syncing' if not skip_images else 'Skipping'} images")
@@ -933,7 +945,7 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, for
     click.echo(f"- {'Syncing' if sync_collections else 'Skipping'} collections")
     if sync_collections:
         click.echo(f"- {'Cleaning' if clean_collections else 'Preserving'} existing collections")
-    click.echo(f"- {'Force' if force else 'Incremental'} sync mode")
+    click.echo(f"- {'Force (resets sync database)' if force else 'Incremental'} sync mode")
 
     # Handle clean-only mode
     if clean_only:
@@ -950,7 +962,8 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, for
     # Handle skip_images flag with legacy compatibility
     if skip_images:
         # Define a wrapper function that overrides the normal collection image sync
-        def skip_sync_collection_images(*args, **kwargs):
+        # Make sure it accepts the sync_db parameter that we added
+        def skip_sync_collection_images(plex_collection, jellyfin_collection_id, jellyfin_client, sync_db, **kwargs):
             return False
 
         # Mark the function as patched so we can detect it later
@@ -969,7 +982,8 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, for
         clean_collections=clean_collections and sync_collections,
         sync_images=not skip_images,
         sync_all_artwork=all_artwork,
-        force_sync=force
+        force_sync=force,
+        db_path="jellytools_sync.db"  # Use standard database path
     )
 
     # Restore original function if it was patched
@@ -989,6 +1003,9 @@ def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, for
     
     if not skip_images:
         click.echo(f"Media items with images: {results['media_with_images']}")
+        
+    # Restore original logging level
+    logging.getLogger().setLevel(original_level)
 
     return 0
 

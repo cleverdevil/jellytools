@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional, Tuple, Set
 
 from jellytools.core.server import ServerManager
 from jellytools.core.config import get_config
+from jellytools.core.utils import SyncDatabase
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -262,8 +263,8 @@ def sync_collection_images(
     plex_collection: Any, 
     jellyfin_collection_id: str, 
     jellyfin_client: Any,
-    force_sync: bool = False,
-    sync_tag: str = "JellytoolsCollectionSynced"
+    sync_db: SyncDatabase,
+    force_sync: bool = False
 ) -> bool:
     """
     Sync images from a Plex collection to a Jellyfin collection.
@@ -272,58 +273,52 @@ def sync_collection_images(
         plex_collection: Plex collection object
         jellyfin_collection_id: Jellyfin collection ID
         jellyfin_client: Jellyfin client instance
-        force_sync: Whether to force sync even if already tagged
-        sync_tag: Tag to mark synced collections
+        sync_db: Database to track sync status
+        force_sync: Whether to force sync even if already synced
 
     Returns:
         bool: True if any images were synced, False otherwise
     """
     images_synced = False
+    collection_title = getattr(plex_collection, 'title', 'Unknown Collection')
     
     # Check if collection is already synced (unless force_sync is True)
-    if not force_sync:
-        # Get collection details to check for the sync tag
-        try:
-            collection_info = jellyfin_client._get(f"/Users/{jellyfin_client.user_id}/Items/{jellyfin_collection_id}")
-            item_tags = [tag.get("Name", "") for tag in collection_info.get("TagItems", [])]
-            
-            if sync_tag in item_tags:
-                logger.debug(f"Collection '{plex_collection.title}' already synced, skipping")
-                return False
-        except Exception as e:
-            # If we can't get collection details, just proceed with the sync
-            logger.debug(f"Error checking sync status of collection '{plex_collection.title}': {e}")
+    if not force_sync and sync_db.is_collection_synced(jellyfin_collection_id):
+        logger.debug(f"Collection '{collection_title}' already synced according to database, skipping")
+        return False
     
-    # If force_sync, remove the tag if it exists
-    if force_sync:
-        remove_jellyfin_tag(jellyfin_client, jellyfin_collection_id, sync_tag)
+    # Check if collection still exists
+    if not jellyfin_client.item_exists(jellyfin_collection_id):
+        logger.warning(f"Collection {jellyfin_collection_id} no longer exists in Jellyfin, skipping")
+        return False
     
     # Skip if image already exists, to avoid duplicate uploads
-    if check_image_exists(jellyfin_client, jellyfin_collection_id, "Primary"):
-        logger.debug(f"Primary image already exists for collection '{plex_collection.title}', skipping")
+    if jellyfin_client.check_image_exists(jellyfin_collection_id, "Primary", detailed_logging=False):
+        logger.debug(f"Primary image already exists for collection '{collection_title}', skipping")
+        # Mark as synced in database even though we didn't upload anything
+        sync_db.mark_collection_synced(jellyfin_collection_id, collection_title)
         return False
         
     # Try to sync the poster image (thumb in Plex)
     try:
         image_data, extension = get_plex_image_data(plex_collection, "thumb")
         if image_data:
-            logger.info(
-                f"Uploading poster image for collection '{plex_collection.title}'..."
-            )
+            logger.info(f"Uploading poster image for collection '{collection_title}'...")
             if jellyfin_client.upload_image(
                 jellyfin_collection_id, "Primary", image_data, extension
             ):
                 images_synced = True
-                logger.info(
-                    f"Successfully uploaded poster image for collection '{plex_collection.title}'"
-                )
+                logger.info(f"Successfully uploaded poster image for collection '{collection_title}'")
+            else:
+                logger.info(f"Failed to upload poster image for collection '{collection_title}'")
                 
-                # Tag the collection as synced
-                tag_jellyfin_item(jellyfin_client, jellyfin_collection_id, sync_tag)
+            # Mark the collection as synced in the database even if upload failed
+            # This prevents repeated attempts at the same collection
+            sync_db.mark_collection_synced(jellyfin_collection_id, collection_title)
     except Exception as e:
-        logger.error(
-            f"Error syncing image for collection '{plex_collection.title}': {e}"
-        )
+        logger.error(f"Error syncing image for collection '{collection_title}': {e}")
+        # Still mark it as synced to avoid repeated failures
+        sync_db.mark_collection_synced(jellyfin_collection_id, collection_title)
 
     return images_synced
 
@@ -383,72 +378,22 @@ def build_plex_media_map(server_manager: ServerManager) -> Tuple[Dict[str, Any],
     return plex_media_map_imdb, plex_media_map_title
 
 
-def tag_jellyfin_item(jellyfin_client: Any, item_id: str, tag: str) -> bool:
+# Database-based sync tracking functions
+
+def get_sync_db(db_path: str = "jellytools_sync.db") -> SyncDatabase:
     """
-    Add a tag to a Jellyfin item.
+    Get a SyncDatabase instance.
     
     Args:
-        jellyfin_client: Jellyfin client instance
-        item_id: Jellyfin item ID
-        tag: Tag to add
+        db_path: Path to the SQLite database file
         
     Returns:
-        bool: True if successful, False otherwise
+        SyncDatabase: Database instance for tracking sync status
     """
-    try:
-        # First get the current item details to see existing tags
-        item_info = jellyfin_client._get(f"/Users/{jellyfin_client.user_id}/Items/{item_id}")
-        
-        # Get current tags
-        current_tags = item_info.get("TagItems", [])
-        current_tag_names = [tag_item.get("Name") for tag_item in current_tags]
-        
-        # Check if tag already exists
-        if tag in current_tag_names:
-            return True  # Tag already exists
-            
-        # Add the new tag
-        url = f"/Items/{item_id}/Tags"
-        result = jellyfin_client._post(url, data={"Tags": [tag]})
-        logger.debug(f"Added tag '{tag}' to item {item_id}")
-        return True
-    except Exception as e:
-        logger.debug(f"Error adding tag '{tag}' to item {item_id}: {e}")
-        return False
+    return SyncDatabase(db_path)
 
-def remove_jellyfin_tag(jellyfin_client: Any, item_id: str, tag: str) -> bool:
-    """
-    Remove a tag from a Jellyfin item.
-    
-    Args:
-        jellyfin_client: Jellyfin client instance
-        item_id: Jellyfin item ID
-        tag: Tag to remove
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        # First check if the item has the tag
-        item_info = jellyfin_client._get(f"/Users/{jellyfin_client.user_id}/Items/{item_id}")
-        
-        # Get current tags
-        current_tags = item_info.get("TagItems", [])
-        current_tag_names = [tag_item.get("Name") for tag_item in current_tags]
-        
-        # Check if tag exists
-        if tag not in current_tag_names:
-            return True  # Tag doesn't exist, nothing to do
-            
-        # Remove the tag
-        url = f"/Items/{item_id}/Tags/{tag}"
-        result = jellyfin_client._delete(url)
-        logger.debug(f"Removed tag '{tag}' from item {item_id}")
-        return True
-    except Exception as e:
-        logger.debug(f"Error removing tag '{tag}' from item {item_id}: {e}")
-        return False
-
+# This function has been moved to the JellyfinClient class
+# Keeping the signature here for backwards compatibility, if needed
 def check_image_exists(jellyfin_client: Any, item_id: str, image_type: str) -> bool:
     """
     Check if an image of the specified type already exists for an item.
@@ -461,26 +406,15 @@ def check_image_exists(jellyfin_client: Any, item_id: str, image_type: str) -> b
     Returns:
         bool: True if image exists, False otherwise
     """
-    try:
-        response = jellyfin_client._request(
-            verb="get", 
-            path=f"/Items/{item_id}/Images/{image_type}", 
-            raw_response=True
-        )
-        
-        # If a valid response with 200 status, the image exists
-        return response.status_code == 200 and len(response.content) > 0
-    except Exception as e:
-        # If we get a 404 or other error, the image doesn't exist
-        return False
+    return jellyfin_client.check_image_exists(item_id, image_type)
 
 def sync_media_images(
     plex_media_maps: Tuple[Dict[str, Any], Dict[str, Any]],
     jellyfin_media_maps: Tuple[Dict[str, Any], Dict[str, Any]],
     jellyfin_client: Any,
+    sync_db: SyncDatabase,
     image_types: List[str] = ["thumb", "art", "banner"],
-    force_sync: bool = False,
-    sync_tag: str = "JellytoolsArtworkSynced"
+    force_sync: bool = False
 ) -> int:
     """
     Sync images from Plex media items to Jellyfin media items.
@@ -489,9 +423,9 @@ def sync_media_images(
         plex_media_maps: Tuple containing (IMDB ID mapping, title mapping) for Plex objects
         jellyfin_media_maps: Tuple containing (IMDB ID mapping, title mapping) for Jellyfin objects
         jellyfin_client: Jellyfin client instance
+        sync_db: Database to track sync status
         image_types: Types of images to sync (default: ["thumb", "art", "banner"])
         force_sync: Whether to force sync for all items (default: False)
-        sync_tag: Tag to use for marking synced items (default: "JellytoolsArtworkSynced")
 
     Returns:
         int: Number of items with synced images
@@ -577,19 +511,19 @@ def sync_media_images(
     for plex_obj, jellyfin_obj, jellyfin_id in media_to_sync:
         processed += 1
         item_synced = False
+        item_name = getattr(plex_obj, 'title', 'Unknown')
         
         # Check if this item has already been synced (unless force_sync is True)
-        if not force_sync:
-            # Check for the sync tag in Jellyfin
-            item_tags = [tag.get("Name", "") for tag in jellyfin_obj.get("TagItems", [])]
-            if sync_tag in item_tags:
-                skipped_items += 1
-                if processed % 100 == 0:
-                    logger.debug(f"Skipped {skipped_items} previously synced items so far")
-                continue
-        elif force_sync:
-            # If force_sync, remove the sync tag if it exists
-            remove_jellyfin_tag(jellyfin_client, jellyfin_id, sync_tag)
+        if not force_sync and sync_db.is_media_synced(jellyfin_id, "artwork"):
+            skipped_items += 1
+            if processed % 100 == 0:
+                logger.debug(f"Skipped {skipped_items} previously synced items so far")
+            continue
+            
+        # Check if the item still exists in Jellyfin
+        if not jellyfin_client.item_exists(jellyfin_id):
+            logger.warning(f"Item {jellyfin_id} ({item_name}) no longer exists in Jellyfin, skipping")
+            continue
         
         # Try to sync each image type
         for plex_type in image_types:
@@ -599,9 +533,28 @@ def sync_media_images(
                 
             jellyfin_type = image_type_mapping[plex_type]
             
+            # Skip "banner" type for movies and episodes - they don't typically support this
+            jellyfin_obj_type = jellyfin_obj.get("Type", "")
+            if jellyfin_type == "Banner" and jellyfin_obj_type in ["Movie", "Episode"]:
+                logger.debug(f"Banner images not typically supported for {jellyfin_obj_type}s, skipping {item_name}")
+                continue
+            
             # Skip if image already exists, to avoid duplicate uploads
-            if check_image_exists(jellyfin_client, jellyfin_id, jellyfin_type):
-                logger.debug(f"{jellyfin_type} image already exists for {plex_obj.title}, skipping")
+            if jellyfin_client.check_image_exists(jellyfin_id, jellyfin_type, detailed_logging=False):
+                logger.debug(f"{jellyfin_type} image already exists for {item_name}, skipping")
+                continue
+            
+            # Check if Plex has the image type before trying to upload
+            has_plex_image = False
+            if plex_type == "thumb" and hasattr(plex_obj, "thumb") and plex_obj.thumb:
+                has_plex_image = True
+            elif plex_type == "art" and hasattr(plex_obj, "art") and plex_obj.art:
+                has_plex_image = True
+            elif plex_type == "banner" and hasattr(plex_obj, "banner") and plex_obj.banner:
+                has_plex_image = True
+                
+            if not has_plex_image:
+                logger.debug(f"No {plex_type} image available in Plex for {item_name}, skipping")
                 continue
             
             try:
@@ -611,14 +564,15 @@ def sync_media_images(
                 ):
                     total_images_synced += 1
                     item_synced = True
-                    logger.debug(f"Synced {plex_type} → {jellyfin_type} for {plex_obj.title}")
+                    logger.debug(f"Synced {plex_type} → {jellyfin_type} for {item_name}")
             except Exception as e:
-                logger.debug(f"Error syncing {plex_type} image for {plex_obj.title}: {e}")
+                logger.debug(f"Error syncing {plex_type} image for {item_name}: {e}")
         
-        # If at least one image was synced, tag the item
+        # If at least one image was synced, record it in the database
         if item_synced:
             items_with_images += 1
-            tag_jellyfin_item(jellyfin_client, jellyfin_id, sync_tag)
+            # Record the sync in the database
+            sync_db.mark_media_synced(jellyfin_id, item_name, "artwork")
 
         # Show progress periodically
         if processed % 20 == 0 or processed == total_items:
@@ -640,6 +594,7 @@ def sync_collections(
     sync_images: bool = True,
     sync_all_artwork: bool = True,
     force_sync: bool = False,
+    db_path: str = "jellytools_sync.db"
 ) -> Dict[str, int]:
     """
     Main function to synchronize collections and artwork from Plex to Jellyfin.
@@ -650,6 +605,7 @@ def sync_collections(
         sync_images: Whether to sync images at all
         sync_all_artwork: Whether to sync all artwork types (not just primary images)
         force_sync: Whether to force sync even for previously synced items
+        db_path: Path to the SQLite database for tracking sync status
 
     Returns:
         dict: Summary statistics of the synchronization
@@ -661,6 +617,14 @@ def sync_collections(
     jellyfin_client = server_manager.get_jellyfin_client()
     plex = server_manager.get_plex_client()
     config = get_config()
+    
+    # Initialize the sync database
+    sync_db = SyncDatabase(db_path)
+    
+    # If force sync is requested, clear the relevant database entries
+    if force_sync:
+        logger.info("Force sync requested, clearing previous sync data")
+        sync_db.reset_sync_data()
     
     if not jellyfin_client:
         logger.error("Jellyfin server not configured or connection failed")
@@ -805,6 +769,7 @@ def sync_collections(
                             plex_collection, 
                             result["Id"], 
                             jellyfin_client,
+                            sync_db,
                             force_sync=force_sync
                         ):
                             collections_with_images += 1
@@ -838,6 +803,7 @@ def sync_collections(
                 plex_media_maps, 
                 (jellyfin_media_imdb, jellyfin_media_title), 
                 jellyfin_client,
+                sync_db,
                 image_types,
                 force_sync=force_sync
             )

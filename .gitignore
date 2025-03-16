@@ -29,6 +29,7 @@ output/
 *.jpg
 *.jpeg
 config.py
+jellytools_sync.db
 
 # But allow examples
 !examples/*.mp4

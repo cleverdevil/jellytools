@@ -4,6 +4,8 @@ PLEX_TOKEN = "your-plex-token"
 
 # Jellyfin server configuration
 JELLYFIN_URL = "http://your-jellyfin-server:8096"
+
+# Authentication options
 JELLYFIN_API_KEY = "your-jellyfin-api-key"
 
 # Libraries to process
