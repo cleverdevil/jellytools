@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional, Tuple, Set
 
 from jellytools.core.server import ServerManager
 from jellytools.core.config import get_config
-from jellytools.core.utils import SyncDatabase
+from jellytools.core.utils import SyncDatabase, Utils
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -101,13 +101,6 @@ def get_jellyfin_media(server_manager: ServerManager) -> Tuple[Dict[str, Any], D
     config = get_config()
     jf_media_imdb = {}
     jf_media_title = {}
-    
-    # Helper function to normalize titles for comparison
-    def normalize_title(title):
-        if not title:
-            return ""
-        # Remove special characters, lowercase, and remove spaces
-        return ''.join(c.lower() for c in title if c.isalnum())
 
     # Process each library type configured in PLEX_LIBRARIES
     for library_name in config.PLEX_LIBRARIES:
@@ -159,9 +152,9 @@ def get_jellyfin_media(server_manager: ServerManager) -> Tuple[Dict[str, Any], D
             if "Name" in item:
                 # For TV shows, include production year to avoid conflicts
                 if item_type == "Series" and "ProductionYear" in item:
-                    normalized_title = normalize_title(f"{item['Name']} {item['ProductionYear']}")
+                    normalized_title = Utils.normalize_title(f"{item['Name']} {item['ProductionYear']}")
                 else:
-                    normalized_title = normalize_title(item["Name"])
+                    normalized_title = Utils.normalize_title(item["Name"])
                 
                 if normalized_title:
                     jf_media_title[normalized_title] = item
@@ -344,13 +337,6 @@ def build_plex_media_map(server_manager: ServerManager) -> Tuple[Dict[str, Any],
     config = get_config()
     plex_media_map_imdb = {}
     plex_media_map_title = {}
-    
-    # Helper function to normalize titles for comparison
-    def normalize_title(title):
-        if not title:
-            return ""
-        # Remove special characters, lowercase, and remove spaces
-        return ''.join(c.lower() for c in title if c.isalnum())
 
     for library in plex.library.sections():
         if library.title in config.PLEX_LIBRARIES:
@@ -367,9 +353,9 @@ def build_plex_media_map(server_manager: ServerManager) -> Tuple[Dict[str, Any],
                 if hasattr(media, 'title') and media.title:
                     # For TV shows, include year in title to avoid conflicts
                     if hasattr(media, 'TYPE') and media.TYPE == 'show' and hasattr(media, 'year') and media.year:
-                        normalized_title = normalize_title(f"{media.title} {media.year}")
+                        normalized_title = Utils.normalize_title(f"{media.title} {media.year}")
                     else:
-                        normalized_title = normalize_title(media.title)
+                        normalized_title = Utils.normalize_title(media.title)
                     
                     if normalized_title:
                         plex_media_map_title[normalized_title] = media
@@ -392,21 +378,6 @@ def get_sync_db(db_path: str = "jellytools_sync.db") -> SyncDatabase:
     """
     return SyncDatabase(db_path)
 
-# This function has been moved to the JellyfinClient class
-# Keeping the signature here for backwards compatibility, if needed
-def check_image_exists(jellyfin_client: Any, item_id: str, image_type: str) -> bool:
-    """
-    Check if an image of the specified type already exists for an item.
-    
-    Args:
-        jellyfin_client: Jellyfin client instance
-        item_id: Jellyfin item ID
-        image_type: Image type (Primary, Backdrop, etc.)
-        
-    Returns:
-        bool: True if image exists, False otherwise
-    """
-    return jellyfin_client.check_image_exists(item_id, image_type)
 
 def sync_media_images(
     plex_media_maps: Tuple[Dict[str, Any], Dict[str, Any]],
@@ -702,12 +673,6 @@ def sync_collections(
                                             plex_collection_items.append(media)
                                             break
                     
-                    # Normalize function for titles
-                    def normalize_title(title):
-                        if not title:
-                            return ""
-                        return ''.join(c.lower() for c in title if c.isalnum())
-                    
                     # Now try to match remaining items by title
                     for plex_item in plex_collection_items:
                         # Skip if we already mapped this item by IMDb ID
@@ -725,11 +690,11 @@ def sync_collections(
                         # Try to find a match by title
                         if hasattr(plex_item, 'title') and plex_item.title:
                             # Try different title variations for matching
-                            title_variations = [normalize_title(plex_item.title)]
+                            title_variations = [Utils.normalize_title(plex_item.title)]
                             
                             # Add year-based variations for shows
                             if hasattr(plex_item, 'TYPE') and plex_item.TYPE == 'show' and hasattr(plex_item, 'year') and plex_item.year:
-                                title_variations.append(normalize_title(f"{plex_item.title} {plex_item.year}"))
+                                title_variations.append(Utils.normalize_title(f"{plex_item.title} {plex_item.year}"))
                             
                             # Check each variation against the Jellyfin title map
                             for title_var in title_variations:

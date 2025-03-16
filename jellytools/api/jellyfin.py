@@ -4,8 +4,9 @@ Jellyfin API client for interacting with Jellyfin servers.
 
 import logging
 import requests
+import uuid
 from base64 import b64encode
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Any
 
 # Configure logging
 logging.basicConfig(
@@ -31,7 +32,8 @@ class JellyfinClient:
         self.api_key = api_key
         self.username = username
         self.password = password
-        self.device_id = "33fc255a-be9b-11ef-993c-272469e0c800"
+        # Generate a unique device ID instead of hardcoding
+        self.device_id = str(uuid.uuid4())
         self.auth_header = f'MediaBrowser Client="jellytools", Device="python-script", DeviceId="{self.device_id}", Version="1.0.0"'
         
         # Set initial headers
@@ -151,7 +153,8 @@ class JellyfinClient:
                     else:
                         logger.error(f"Status code: {e.response.status_code}")
                         logger.error(f"Response text: {e.response.text[:200]}...")
-                except:
+                except Exception as parse_error:
+                    logger.error(f"Failed to parse error response: {parse_error}")
                     logger.error(f"Status code: {e.response.status_code}")
                     logger.error(
                         f"Response text: {e.response.text[:200] if hasattr(e.response, 'text') else 'No text'}..."
@@ -379,7 +382,7 @@ class JellyfinClient:
 
     def download_image(
         self, item_id: str, image_type: str = "Primary"
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Download an image for a specific item.
 
@@ -388,19 +391,24 @@ class JellyfinClient:
             image_type (str): Type of image (Primary, Backdrop, etc.)
 
         Returns:
-            dict: Image data and extension, or None if not found
+            Optional[Dict[str, Any]]: Dictionary with image data and extension, or None if not found
         """
         url = f"/Items/{item_id}/Images/{image_type}/0"
-        response = self._request(verb="get", path=url, raw_response=True)
+        try:
+            response = self._request(verb="get", path=url, raw_response=True)
 
-        if response.status_code != 200:
+            if response.status_code != 200:
+                logger.debug(f"Image not found for item {item_id}, type {image_type}")
+                return None
+
+            extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(
+                response.headers.get("content-type", ""), "jpg"
+            )
+
+            return {"image_data": response.content, "extension": extension}
+        except Exception as e:
+            logger.error(f"Error downloading image for item {item_id}: {e}")
             return None
-
-        extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(
-            response.headers["content-type"], "jpg"
-        )
-
-        return {"image_data": response.content, "extension": extension}
 
     def upload_image(
         self, item_id: str, image_type: str, image_data: bytes, image_ext: str = "jpg"
