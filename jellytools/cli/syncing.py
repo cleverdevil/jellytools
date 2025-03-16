@@ -79,23 +79,34 @@ def get_plex_collections(
     return collections, collection_objects
 
 
-def get_jellyfin_media(server_manager: ServerManager) -> Dict[str, Any]:
+def get_jellyfin_media(server_manager: ServerManager) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Pre-fetch all media in Jellyfin from the configured libraries and map them by IMDB ID.
+    Pre-fetch all media in Jellyfin from the configured libraries and map them by IMDB ID and title.
 
     Args:
         server_manager: Server manager instance with Jellyfin connection
 
     Returns:
-        dict: Mapping of IMDB IDs to Jellyfin media objects
+        tuple: (
+            dict: Mapping of IMDB IDs to Jellyfin media objects,
+            dict: Mapping of normalized titles to Jellyfin media objects
+        )
     """
     jellyfin = server_manager.get_jellyfin_client()
     if not jellyfin:
         logger.error("Jellyfin server not configured or connection failed")
-        return {}
+        return {}, {}
 
     config = get_config()
-    jf_media = {}
+    jf_media_imdb = {}
+    jf_media_title = {}
+    
+    # Helper function to normalize titles for comparison
+    def normalize_title(title):
+        if not title:
+            return ""
+        # Remove special characters, lowercase, and remove spaces
+        return ''.join(c.lower() for c in title if c.isalnum())
 
     # Process each library type configured in PLEX_LIBRARIES
     for library_name in config.PLEX_LIBRARIES:
@@ -117,10 +128,11 @@ def get_jellyfin_media(server_manager: ServerManager) -> Dict[str, Any]:
             parentId=library_id, recursive=True, include_fields=True
         )
 
-        # Process each item, looking for IMDB IDs directly in the item data
-        logger.info(f"Mapping Jellyfin {library_name} by IMDB ID...")
+        # Process each item, mapping by both IMDB ID and title
+        logger.info(f"Mapping Jellyfin {library_name} media...")
         item_count = 0
         items_with_imdb = 0
+        items_with_title = 0
 
         for item in library_contents.get("Items", []):
             # Skip folders, collections, and other non-media items
@@ -132,22 +144,38 @@ def get_jellyfin_media(server_manager: ServerManager) -> Dict[str, Any]:
             if item_count % 100 == 0:
                 logger.info(f"Processed {item_count} items in {library_name}...")
 
-            # Extract IMDB ID directly from the item data
+            # Extract IMDB ID first
+            imdb_mapped = False
             provider_ids = item.get("ProviderIds", {})
             for provider, provider_id in provider_ids.items():
                 if provider.lower() == "imdb":
-                    jf_media[provider_id] = item
+                    jf_media_imdb[provider_id] = item
                     items_with_imdb += 1
+                    imdb_mapped = True
                     break
+            
+            # Always map by title as well
+            if "Name" in item:
+                # For TV shows, include production year to avoid conflicts
+                if item_type == "Series" and "ProductionYear" in item:
+                    normalized_title = normalize_title(f"{item['Name']} {item['ProductionYear']}")
+                else:
+                    normalized_title = normalize_title(item["Name"])
+                
+                if normalized_title:
+                    jf_media_title[normalized_title] = item
+                    items_with_title += 1
 
         logger.info(
-            f"Found {item_count} items in {library_name}, of which {items_with_imdb} have IMDB IDs"
+            f"Found {item_count} items in {library_name}: "
+            f"{items_with_imdb} with IMDb IDs, {items_with_title} with titles"
         )
 
     logger.info(
-        f"Total: Found {len(jf_media)} media items with IMDB IDs across all Jellyfin libraries"
+        f"Total: Found {len(jf_media_imdb)} items with IMDb IDs and {len(jf_media_title)} with titles "
+        f"across all Jellyfin libraries"
     )
-    return jf_media
+    return jf_media_imdb, jf_media_title
 
 
 def clean_jellyfin_collections(server_manager: ServerManager) -> None:
@@ -300,35 +328,59 @@ def sync_collection_images(
     return images_synced
 
 
-def build_plex_media_map(server_manager: ServerManager) -> Dict[str, Any]:
+def build_plex_media_map(server_manager: ServerManager) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Build a mapping of IMDB IDs to Plex media objects.
+    Build mappings of IMDB IDs and titles to Plex media objects.
 
     Args:
         server_manager: Server manager instance with Plex connection
 
     Returns:
-        dict: Mapping of IMDB IDs to Plex media objects
+        tuple: (
+            dict: Mapping of IMDB IDs to Plex media objects,
+            dict: Mapping of normalized titles to Plex media objects
+        )
     """
     plex = server_manager.get_plex_client()
     if not plex:
         logger.error("Plex server not configured or connection failed")
-        return {}
+        return {}, {}
 
     config = get_config()
-    plex_media_map = {}
+    plex_media_map_imdb = {}
+    plex_media_map_title = {}
+    
+    # Helper function to normalize titles for comparison
+    def normalize_title(title):
+        if not title:
+            return ""
+        # Remove special characters, lowercase, and remove spaces
+        return ''.join(c.lower() for c in title if c.isalnum())
 
     for library in plex.library.sections():
         if library.title in config.PLEX_LIBRARIES:
             for media in library.all():
+                # Try to get IMDb ID first
                 imdb_id = None
                 for guid in media.guids:
                     if guid.id.startswith("imdb"):
                         imdb_id = guid.id.replace("imdb://", "")
-                        plex_media_map[imdb_id] = media
+                        plex_media_map_imdb[imdb_id] = media
                         break
+                
+                # Always create a title mapping as well
+                if hasattr(media, 'title') and media.title:
+                    # For TV shows, include year in title to avoid conflicts
+                    if hasattr(media, 'TYPE') and media.TYPE == 'show' and hasattr(media, 'year') and media.year:
+                        normalized_title = normalize_title(f"{media.title} {media.year}")
+                    else:
+                        normalized_title = normalize_title(media.title)
+                    
+                    if normalized_title:
+                        plex_media_map_title[normalized_title] = media
 
-    return plex_media_map
+    logger.info(f"Found {len(plex_media_map_imdb)} Plex items with IMDb IDs and {len(plex_media_map_title)} with titles")
+    return plex_media_map_imdb, plex_media_map_title
 
 
 def tag_jellyfin_item(jellyfin_client: Any, item_id: str, tag: str) -> bool:
@@ -423,8 +475,8 @@ def check_image_exists(jellyfin_client: Any, item_id: str, image_type: str) -> b
         return False
 
 def sync_media_images(
-    plex_media_map: Dict[str, Any],
-    jellyfin_media_map: Dict[str, Any],
+    plex_media_maps: Tuple[Dict[str, Any], Dict[str, Any]],
+    jellyfin_media_maps: Tuple[Dict[str, Any], Dict[str, Any]],
     jellyfin_client: Any,
     image_types: List[str] = ["thumb", "art", "banner"],
     force_sync: bool = False,
@@ -434,8 +486,8 @@ def sync_media_images(
     Sync images from Plex media items to Jellyfin media items.
 
     Args:
-        plex_media_map: Mapping of IMDB IDs to Plex media objects
-        jellyfin_media_map: Mapping of IMDB IDs to Jellyfin media objects
+        plex_media_maps: Tuple containing (IMDB ID mapping, title mapping) for Plex objects
+        jellyfin_media_maps: Tuple containing (IMDB ID mapping, title mapping) for Jellyfin objects
         jellyfin_client: Jellyfin client instance
         image_types: Types of images to sync (default: ["thumb", "art", "banner"])
         force_sync: Whether to force sync for all items (default: False)
@@ -444,10 +496,63 @@ def sync_media_images(
     Returns:
         int: Number of items with synced images
     """
-    synced_count = 0
-    common_imdb_ids = set(plex_media_map.keys()) & set(jellyfin_media_map.keys())
-    total_items = len(common_imdb_ids)
-
+    # Unpack the mappings
+    plex_media_map_imdb, plex_media_map_title = plex_media_maps
+    jellyfin_media_map_imdb, jellyfin_media_map_title = jellyfin_media_maps
+    
+    # Create a combined set of media to sync (matched by either IMDb ID or title)
+    media_to_sync = []  # List of tuples: (plex_obj, jellyfin_obj, jellyfin_id)
+    
+    # First add all IMDb matches
+    imdb_matches = 0
+    common_imdb_ids = set(plex_media_map_imdb.keys()) & set(jellyfin_media_map_imdb.keys())
+    for imdb_id in common_imdb_ids:
+        plex_obj = plex_media_map_imdb[imdb_id]
+        jellyfin_obj = jellyfin_media_map_imdb[imdb_id]
+        jellyfin_id = jellyfin_obj["Id"]
+        media_to_sync.append((plex_obj, jellyfin_obj, jellyfin_id))
+        imdb_matches += 1
+    
+    # Add title matches for items not already mapped by IMDb
+    title_matches = 0
+    plex_processed_by_imdb = set()
+    jellyfin_processed_by_imdb = set()
+    
+    # Track which items were already processed via IMDb
+    for imdb_id in common_imdb_ids:
+        plex_obj = plex_media_map_imdb[imdb_id]
+        jellyfin_obj = jellyfin_media_map_imdb[imdb_id]
+        
+        # Use title as the key if available
+        if hasattr(plex_obj, 'title'):
+            # Add both with and without year for maximum matching potential
+            plex_processed_by_imdb.add(plex_obj.title.lower())
+            if hasattr(plex_obj, 'year') and plex_obj.year:
+                plex_processed_by_imdb.add(f"{plex_obj.title.lower()} {plex_obj.year}")
+        
+        jellyfin_processed_by_imdb.add(jellyfin_obj.get("Id"))
+    
+    # Now look for title matches that weren't already processed
+    common_titles = set(plex_media_map_title.keys()) & set(jellyfin_media_map_title.keys())
+    for title in common_titles:
+        plex_obj = plex_media_map_title[title]
+        jellyfin_obj = jellyfin_media_map_title[title]
+        jellyfin_id = jellyfin_obj["Id"]
+        
+        # Skip if this Jellyfin ID was already processed via IMDb
+        if jellyfin_id in jellyfin_processed_by_imdb:
+            continue
+            
+        # Skip if this Plex title was already processed via IMDb
+        if hasattr(plex_obj, 'title') and plex_obj.title.lower() in plex_processed_by_imdb:
+            continue
+        
+        # This is a new match by title
+        media_to_sync.append((plex_obj, jellyfin_obj, jellyfin_id))
+        title_matches += 1
+    
+    total_items = len(media_to_sync)
+    
     # Define mapping from Plex image types to Jellyfin image types
     image_type_mapping = {
         "thumb": "Primary",  # Poster/thumbnail
@@ -455,7 +560,8 @@ def sync_media_images(
         "banner": "Banner",  # Banner image
     }
 
-    logger.info(f"Syncing {', '.join(image_types)} images for {total_items} media items...")
+    logger.info(f"Found {imdb_matches} matches by IMDb ID and {title_matches} additional matches by title")
+    logger.info(f"Syncing {', '.join(image_types)} images for {total_items} total media items...")
     
     if force_sync:
         logger.info("Force sync enabled: checking all items regardless of sync status")
@@ -468,13 +574,9 @@ def sync_media_images(
     total_images_synced = 0
     skipped_items = 0
     
-    for imdb_id in common_imdb_ids:
+    for plex_obj, jellyfin_obj, jellyfin_id in media_to_sync:
         processed += 1
         item_synced = False
-
-        plex_obj = plex_media_map[imdb_id]
-        jellyfin_obj = jellyfin_media_map[imdb_id]
-        jellyfin_id = jellyfin_obj["Id"]
         
         # Check if this item has already been synced (unless force_sync is True)
         if not force_sync:
@@ -528,6 +630,7 @@ def sync_media_images(
 
     logger.info(f"Total: {total_images_synced} images synced for {items_with_images} items")
     logger.info(f"Skipped {skipped_items} previously synced items")
+    logger.info(f"Match breakdown: {imdb_matches} by IMDb ID, {title_matches} by title")
     return items_with_images
 
 
@@ -554,10 +657,23 @@ def sync_collections(
     logger.info("\n=== Starting Plex to Jellyfin Synchronization ===\n")
     start_time = time.time()
 
-    # Get Jellyfin client
+    # Get clients for both servers and load config
     jellyfin_client = server_manager.get_jellyfin_client()
+    plex = server_manager.get_plex_client()
+    config = get_config()
+    
     if not jellyfin_client:
         logger.error("Jellyfin server not configured or connection failed")
+        return {
+            "collections_created": 0,
+            "collections_failed": 0,
+            "collections_with_images": 0,
+            "media_with_images": 0,
+            "elapsed_time": 0,
+        }
+        
+    if not plex:
+        logger.error("Plex server not configured or connection failed")
         return {
             "collections_created": 0,
             "collections_failed": 0,
@@ -583,7 +699,7 @@ def sync_collections(
 
     # Step 2: Get Jellyfin media data
     logger.info("\n--- Gathering Jellyfin Media Data ---")
-    jellyfin_media = get_jellyfin_media(server_manager)
+    jellyfin_media_imdb, jellyfin_media_title = get_jellyfin_media(server_manager)
 
     # Step 3: Clean existing Jellyfin collections if requested
     if clean_collections:
@@ -597,15 +713,81 @@ def sync_collections(
             for collection_name, imdb_ids in plex_collections.items():
                 # Convert IMDB IDs to Jellyfin media IDs
                 jellyfin_item_ids = []
+                
+                # First try to match by IMDb ID
+                imdb_matches = 0
                 for imdb_id in imdb_ids:
-                    if imdb_id in jellyfin_media:
-                        jellyfin_item_ids.append(jellyfin_media[imdb_id]["Id"])
-
+                    if imdb_id in jellyfin_media_imdb:
+                        jellyfin_item_ids.append(jellyfin_media_imdb[imdb_id]["Id"])
+                        imdb_matches += 1
+                
+                # For items that didn't match by IMDb ID, try matching by title
+                if imdb_matches < len(imdb_ids):
+                    # Get a mapping of titles to IMDb IDs for Plex items in this collection
+                    plex_collection_titles = {}
+                    title_matches = 0
+                    
+                    # Get all the Plex objects for this collection
+                    plex_collection_items = []
+                    for imdb_id in imdb_ids:
+                        for library in plex.library.sections():
+                            if library.title in config.PLEX_LIBRARIES:
+                                for media in library.all():
+                                    for guid in media.guids:
+                                        if guid.id.startswith("imdb") and guid.id.replace("imdb://", "") == imdb_id:
+                                            plex_collection_items.append(media)
+                                            break
+                    
+                    # Normalize function for titles
+                    def normalize_title(title):
+                        if not title:
+                            return ""
+                        return ''.join(c.lower() for c in title if c.isalnum())
+                    
+                    # Now try to match remaining items by title
+                    for plex_item in plex_collection_items:
+                        # Skip if we already mapped this item by IMDb ID
+                        imdb_mapped = False
+                        for guid in plex_item.guids:
+                            if guid.id.startswith("imdb"):
+                                imdb_id = guid.id.replace("imdb://", "")
+                                if imdb_id in jellyfin_media_imdb:
+                                    imdb_mapped = True
+                                    break
+                        
+                        if imdb_mapped:
+                            continue
+                            
+                        # Try to find a match by title
+                        if hasattr(plex_item, 'title') and plex_item.title:
+                            # Try different title variations for matching
+                            title_variations = [normalize_title(plex_item.title)]
+                            
+                            # Add year-based variations for shows
+                            if hasattr(plex_item, 'TYPE') and plex_item.TYPE == 'show' and hasattr(plex_item, 'year') and plex_item.year:
+                                title_variations.append(normalize_title(f"{plex_item.title} {plex_item.year}"))
+                            
+                            # Check each variation against the Jellyfin title map
+                            for title_var in title_variations:
+                                if title_var in jellyfin_media_title:
+                                    jellyfin_id = jellyfin_media_title[title_var]["Id"]
+                                    
+                                    # Make sure we don't add duplicates
+                                    if jellyfin_id not in jellyfin_item_ids:
+                                        jellyfin_item_ids.append(jellyfin_id)
+                                        title_matches += 1
+                                        break
+                
                 if not jellyfin_item_ids:
                     logger.info(
                         f"Skipping collection '{collection_name}' - no matching items in Jellyfin"
                     )
                     continue
+                    
+                logger.info(
+                    f"Collection '{collection_name}': {imdb_matches} items matched by IMDb ID, "
+                    f"{len(jellyfin_item_ids) - imdb_matches} additional items matched by title"
+                )
 
                 logger.info(
                     f"Creating collection '{collection_name}' with {len(jellyfin_item_ids)} items"
@@ -641,7 +823,7 @@ def sync_collections(
         if hasattr(sync_collection_images, "__patched_to_skip__"):
             logger.info("Image syncing has been disabled with --skip-images flag")
         else:
-            plex_media_map = build_plex_media_map(server_manager)
+            plex_media_maps = build_plex_media_map(server_manager)
             
             # Determine which image types to sync
             image_types = ["thumb"]  # Default to just primary/poster images
@@ -651,10 +833,10 @@ def sync_collections(
             else:
                 logger.info("Syncing only Primary/Poster images")
                 
-            # Sync the images
+            # Sync the images - pass both IMDb and title mappings
             media_with_images = sync_media_images(
-                plex_media_map, 
-                jellyfin_media, 
+                plex_media_maps, 
+                (jellyfin_media_imdb, jellyfin_media_title), 
                 jellyfin_client,
                 image_types,
                 force_sync=force_sync

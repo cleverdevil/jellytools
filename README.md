@@ -179,6 +179,7 @@ By default, `jellytools sync` will:
 - Create new collections in Jellyfin based on Plex collections
 - Sync all artwork types (posters, backdrops, banners) for all media
 - Skip previously synced items (incremental sync using tags)
+- Match items between Plex and Jellyfin using IMDb IDs when available, falling back to title matching when IDs aren't available
 
 ```bash
 # Sync everything (default behavior)
