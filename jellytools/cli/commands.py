@@ -344,6 +344,8 @@ def init(file):
     is_flag=True,
     help="Skip generating PNG thumbnails of the last frame",
 )
+@click.option("--skip-existing", is_flag=True, help="Skip animations that already exist in the output directory")
+@click.option("--libraries", help="Comma-separated list of libraries to process (e.g. 'Movies,TV Shows')")
 @click.option("--output-dir", "-o", help="Output directory for videos")
 @click.pass_context
 def generate(
@@ -353,9 +355,19 @@ def generate(
     skip_low_res,
     skip_download,
     skip_thumbnails,
+    skip_existing,
+    libraries,
     output_dir,
 ):
-    """Generate library card animations"""
+    """Generate library card animations
+    
+    By default, this command will generate animations for all libraries configured
+    in your config file. Use the --libraries option to specify a subset of libraries.
+    
+    The --skip-existing flag allows you to skip regenerating animations that already
+    exist in the output directory, which is useful when adding new animations or
+    libraries to an existing set.
+    """
     # Check dependencies first
     if not Utils.check_dependencies():
         click.echo("Missing required dependencies. Please install FFmpeg.")
@@ -389,8 +401,24 @@ def generate(
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
-
-    for library_name in config.JELLYFIN_LIBRARIES:
+    
+    # Show additional information about operation modes
+    if skip_existing:
+        click.echo("\n--- Skip existing mode enabled: Only generating new animations ---")
+        
+    # Filter libraries if specified
+    if libraries:
+        target_libraries = [lib.strip() for lib in libraries.split(',')]
+        click.echo(f"\n--- Only processing specified libraries: {', '.join(target_libraries)} ---")
+        library_list = [lib for lib in config.JELLYFIN_LIBRARIES if lib in target_libraries]
+        if not library_list:
+            click.echo(f"Warning: None of the specified libraries {target_libraries} found in configuration")
+            click.echo(f"Available libraries: {', '.join(config.JELLYFIN_LIBRARIES)}")
+            return 1
+    else:
+        library_list = config.JELLYFIN_LIBRARIES
+    
+    for library_name in library_list:
         click.echo(f"\n=== Processing library: {library_name} ===")
 
         # Determine which animation types to use:
@@ -415,6 +443,8 @@ def generate(
 
         # Process each animation type
         outputs = []
+        skipped_outputs = []
+        new_outputs = []
         for lib_animation_type in library_animation_types:
             # Initialize pygame
             pygame.init()
@@ -424,44 +454,61 @@ def generate(
             # Generate the high-resolution animation
             hi_res_output = None
             if not skip_hi_res:
-                click.echo(f"Creating high-resolution {lib_animation_type} animation")
                 output_filename = os.path.join(
                     output_dir,
                     f"{library_name}_{lib_animation_type}_video_2k.mp4",
                 )
-
-                output_files = render_animation(
-                    animation_manager,
-                    library_name,
-                    lib_animation_type,
-                    output_filename,
-                    save_last_frame=not skip_thumbnails,
-                )
-
-                hi_res_output = output_files["video"]
-                thumbnail = output_files["thumbnail"]
-
-                if thumbnail:
-                    click.echo(f"High-res thumbnail saved to: {thumbnail}")
-
-                if output_files.get("thumbnail_480p"):
-                    click.echo(
-                        f"Low-res thumbnail saved to: {output_files['thumbnail_480p']}"
+                
+                # Check if file already exists and skip if requested
+                if skip_existing and os.path.exists(output_filename):
+                    click.echo(f"Skipping existing high-resolution animation: {os.path.basename(output_filename)}")
+                    hi_res_output = output_filename
+                    outputs.append(hi_res_output)
+                    skipped_outputs.append(hi_res_output)
+                else:
+                    click.echo(f"Creating high-resolution {lib_animation_type} animation")
+                    output_files = render_animation(
+                        animation_manager,
+                        library_name,
+                        lib_animation_type,
+                        output_filename,
+                        save_last_frame=not skip_thumbnails,
                     )
 
-                outputs.append(hi_res_output)
+                    hi_res_output = output_files["video"]
+                    thumbnail = output_files["thumbnail"]
+
+                    if thumbnail:
+                        click.echo(f"High-res thumbnail saved to: {thumbnail}")
+
+                    if output_files.get("thumbnail_480p"):
+                        click.echo(
+                            f"Low-res thumbnail saved to: {output_files['thumbnail_480p']}"
+                        )
+
+                    outputs.append(hi_res_output)
+                    new_outputs.append(hi_res_output)
 
                 # Generate low-resolution version if requested
-                if not skip_low_res:
-                    click.echo(f"Generating 480p low-resolution version...")
-                    low_res_output = generate_low_res_video(hi_res_output)
-                    if low_res_output:
-                        click.echo(
-                            f"Low-resolution video saved to: {os.path.basename(low_res_output)}"
-                        )
-                        outputs.append(low_res_output)
+                if not skip_low_res and hi_res_output:
+                    # Check if low-res version already exists
+                    potential_low_res = hi_res_output.replace("_video_2k.mp4", "_video_480p.mp4")
+                    
+                    if skip_existing and os.path.exists(potential_low_res):
+                        click.echo(f"Skipping existing low-resolution animation: {os.path.basename(potential_low_res)}")
+                        outputs.append(potential_low_res)
+                        skipped_outputs.append(potential_low_res)
                     else:
-                        click.echo("Failed to generate low-resolution video.")
+                        click.echo(f"Generating 480p low-resolution version...")
+                        low_res_output = generate_low_res_video(hi_res_output)
+                        if low_res_output:
+                            click.echo(
+                                f"Low-resolution video saved to: {os.path.basename(low_res_output)}"
+                            )
+                            outputs.append(low_res_output)
+                            new_outputs.append(low_res_output)
+                        else:
+                            click.echo("Failed to generate low-resolution video.")
                 else:
                     click.echo("Skipping low-resolution video generation.")
             else:
@@ -474,18 +521,35 @@ def generate(
                 if os.path.exists(potential_file):
                     hi_res_output = potential_file
                     outputs.append(hi_res_output)
+                    # Since we're skipping the high-res generation but still using the file,
+                    # add it to skipped outputs list if skip_existing is enabled
+                    if skip_existing:
+                        skipped_outputs.append(hi_res_output)
 
             # Cleanup after each animation
             pygame.quit()
 
         elapsed_time = time.time() - start_time
         click.echo(f"\n=== Generation for {library_name} Complete ===")
-        click.echo(f"Generated {len(outputs)} animations")
+        
+        if skip_existing:
+            click.echo(f"Generated {len(new_outputs)} new animations, skipped {len(skipped_outputs)} existing animations")
+        else:
+            click.echo(f"Generated {len(outputs)} animations")
+            
         for output in outputs:
             filename = os.path.basename(output)
             click.echo(f"- {filename}")
         click.echo(f"Time elapsed: {elapsed_time:.2f} seconds")
 
+    # Final summary
+    total_elapsed_time = time.time() - start_time
+    
+    # Show filtered library info if applicable
+    if libraries:
+        click.echo(f"\n=== Processed {len(library_list)} of {len(config.JELLYFIN_LIBRARIES)} libraries ===")
+    
+    click.echo(f"\n=== Total time elapsed: {total_elapsed_time:.2f} seconds ===")
     click.echo("\nDone!")
     return 0
 
