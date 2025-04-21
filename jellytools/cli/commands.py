@@ -9,12 +9,12 @@ import logging
 import click
 import pygame
 import cv2
+import pathlib
 from typing import List, Optional
 
 from jellytools.core.config import load_config, create_default_config_file
 from jellytools.core.server import ServerManager
 from jellytools.core.utils import Utils
-from jellytools.cli.syncing import sync_collections
 from jellytools.animations.base import (
     AnimationManager,
     WIDTH,
@@ -378,23 +378,9 @@ def generate(
 
     # Initialize server manager
     server_manager = ServerManager()
-
-    # Download posters if required
-    if not skip_download:
-        click.echo("\n--- Gathering Jellyfin Data ---")
-        server_manager.download_jellyfin_posters()
-
-    # Initialize animation manager
-    animation_manager = AnimationManager()
-    register_animations(animation_manager)
-
-    # Show available animation types
-    click.echo(
-        f"Available animation types: {', '.join(animation_manager.get_animation_types())}"
-    )
-
+    
     config = ctx.obj["config"]
-
+    
     # Use the output directory from config if not specified
     if output_dir is None:
         output_dir = config.DEFAULT_OUTPUT_DIR
@@ -417,6 +403,25 @@ def generate(
             return 1
     else:
         library_list = config.JELLYFIN_LIBRARIES
+    
+    # Download posters if required
+    if not skip_download:
+        click.echo("\n--- Gathering Jellyfin Data ---")
+        # Call the poster download function with the specified libraries
+        result = server_manager.download_jellyfin_posters(libraries=library_list)
+        # Show simple summary of downloads
+        total_downloaded = sum(result.get('downloaded', {}).values())
+        total_skipped = sum(result.get('skipped', {}).values())
+        click.echo(f"Downloaded {total_downloaded} new poster images, skipped {total_skipped} existing poster images")
+
+    # Initialize animation manager
+    animation_manager = AnimationManager()
+    register_animations(animation_manager)
+
+    # Show available animation types
+    click.echo(
+        f"Available animation types: {', '.join(animation_manager.get_animation_types())}"
+    )
     
     for library_name in library_list:
         click.echo(f"\n=== Processing library: {library_name} ===")
@@ -606,21 +611,102 @@ def libraries(ctx):
     else:
         click.echo("Jellyfin client not configured.")
 
-    # Check Plex libraries
-    plex_client = server_manager.get_plex_client()
-    if plex_client:
-        click.echo("\n=== Plex Libraries ===")
-        try:
-            libraries = plex_client.library.sections()
-            if libraries:
-                for lib in libraries:
-                    click.echo(f"- {lib.title} ({lib.type})")
-            else:
-                click.echo("No libraries found.")
-        except Exception as e:
-            click.echo(f"Error retrieving Plex libraries: {e}")
+
+@cli.group()
+@click.pass_context
+def posters(ctx):
+    """Commands for managing poster artwork"""
+    pass
+
+
+@posters.command(name="fetch")
+@click.option(
+    "--clean-first", 
+    is_flag=True, 
+    help="Remove all existing poster files before downloading"
+)
+@click.option(
+    "--libraries", 
+    help="Comma-separated list of libraries to process (defaults to all configured libraries)"
+)
+@click.pass_context
+def fetch_posters(ctx, clean_first, libraries):
+    """
+    Download poster artwork from Jellyfin for all configured libraries
+    
+    This command connects to Jellyfin and downloads missing poster artwork for each 
+    library configured in your config file. Use the --clean-first option to remove
+    all existing artwork before downloading.
+    """
+    # Initialize server manager
+    server_manager = ServerManager()
+    config = ctx.obj["config"]
+    
+    # Get the poster directory
+    poster_dir = pathlib.Path(config.POSTER_DIRECTORY)
+    if not poster_dir.exists():
+        poster_dir.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Created poster directory: {poster_dir}")
+    
+    # Filter libraries if specified
+    if libraries:
+        target_libraries = [lib.strip() for lib in libraries.split(',')]
+        click.echo(f"\n--- Only processing specified libraries: {', '.join(target_libraries)} ---")
+        library_list = [lib for lib in config.JELLYFIN_LIBRARIES if lib in target_libraries]
+        if not library_list:
+            click.echo(f"Warning: None of the specified libraries {target_libraries} found in configuration")
+            click.echo(f"Available libraries: {', '.join(config.JELLYFIN_LIBRARIES)}")
+            return 1
     else:
-        click.echo("Plex client not configured.")
+        library_list = config.JELLYFIN_LIBRARIES
+    
+    # Clean existing poster directories if requested
+    if clean_first:
+        click.echo("\n=== Cleaning existing poster directories ===")
+        for library_name in library_list:
+            library_poster_dir = poster_dir / library_name
+            if library_poster_dir.exists():
+                click.echo(f"Removing posters for library: {library_name}")
+                try:
+                    # Count files before removal
+                    file_count = sum(1 for f in library_poster_dir.iterdir() if f.is_file())
+                    # Remove all files in directory
+                    for file_path in library_poster_dir.iterdir():
+                        if file_path.is_file():
+                            file_path.unlink()
+                    click.echo(f"Removed {file_count} poster files from {library_name}")
+                except Exception as e:
+                    click.echo(f"Error cleaning directory {library_poster_dir}: {e}")
+            else:
+                click.echo(f"Library poster directory not found for {library_name}, skipping")
+    
+    # Download posters
+    click.echo("\n=== Downloading poster artwork from Jellyfin ===")
+    try:
+        result = server_manager.download_jellyfin_posters(libraries=library_list)
+        
+        # Show summary
+        total_libraries = len(library_list)
+        total_downloaded = sum(result.get('downloaded', {}).values())
+        total_skipped = sum(result.get('skipped', {}).values())
+        
+        click.echo("\n=== Poster Download Summary ===")
+        click.echo(f"Processed {total_libraries} libraries")
+        click.echo(f"Downloaded {total_downloaded} new poster images")
+        click.echo(f"Skipped {total_skipped} existing poster images")
+        
+        # Show per-library details
+        click.echo("\nPer-library details:")
+        for library_name in library_list:
+            downloaded = result.get('downloaded', {}).get(library_name, 0)
+            skipped = result.get('skipped', {}).get(library_name, 0)
+            click.echo(f"- {library_name}: {downloaded} new, {skipped} existing")
+        
+        return 0
+    except Exception as e:
+        click.echo(f"Error downloading posters: {e}")
+        return 1
+
 
 
 @cli.command()
@@ -930,148 +1016,6 @@ def generate_js(ctx, output, replay, hide_labels):
         return 1
 
 
-@cli.command()
-@click.option(
-    "--skip-images/--sync-images", 
-    default=False,
-    help="Skip syncing any images (faster) [default: sync images]"
-)
-@click.option(
-    "--all-artwork/--primary-only",
-    default=True,
-    help="Sync all artwork types including backdrops and banners [default: all artwork]"
-)
-@click.option(
-    "--sync-collections/--skip-collections",
-    default=True,
-    help="Sync collections from Plex to Jellyfin [default: sync collections]"
-)
-@click.option(
-    "--clean-collections/--preserve-collections",
-    default=True,
-    help="Clean existing Jellyfin collections before syncing [default: clean collections]"
-)
-@click.option(
-    "--force",
-    is_flag=True,
-    help="Force sync all items even if they've been previously synced (clears sync database)"
-)
-@click.option(
-    "--clean-only",
-    is_flag=True,
-    help="Only clean existing collections without creating new ones or syncing artwork"
-)
-@click.option(
-    "--verbose", "-v", is_flag=True, help="Enable verbose logging output"
-)
-@click.pass_context
-def sync(ctx, skip_images, all_artwork, sync_collections, clean_collections, force, clean_only, verbose):
-    """Sync collections and artwork from Plex to Jellyfin
-    
-    By default, this command will:
-    - Clean existing Jellyfin collections
-    - Create new collections based on Plex collections
-    - Sync all artwork (posters, backdrops, banners) from Plex to Jellyfin
-    
-    Use the various flags to customize the behavior.
-    """
-    # Initialize server manager
-    server_manager = ServerManager()
-
-    # Check if both servers are configured
-    jellyfin_client = server_manager.get_jellyfin_client()
-    plex_client = server_manager.get_plex_client()
-
-    if not jellyfin_client:
-        click.echo("Error: Jellyfin server not configured or connection failed")
-        return 1
-
-    if not plex_client:
-        click.echo("Error: Plex server not configured or connection failed")
-        return 1
-
-    click.echo("\n=== Starting Plex to Jellyfin Synchronization ===\n")
-
-    # Adjust logging levels for the sync process - reduce noise by setting higher threshold
-    # This is especially useful for the 404 errors when checking images
-    original_level = logging.getLogger().level
-    if not verbose:
-        # If not in verbose mode, only show warnings and above for the sync process
-        logging.getLogger().setLevel(logging.WARNING)
-        logging.getLogger("jellytools.api.jellyfin").setLevel(logging.WARNING)
-        logging.getLogger("jellytools.cli.syncing").setLevel(logging.INFO)  # Keep INFO for sync status
-    
-    # Print sync configuration
-    click.echo("Sync settings:")
-    click.echo(f"- {'Syncing' if not skip_images else 'Skipping'} images")
-    if not skip_images:
-        click.echo(f"- Syncing {'all artwork types' if all_artwork else 'primary images only'}")
-    click.echo(f"- {'Syncing' if sync_collections else 'Skipping'} collections")
-    if sync_collections:
-        click.echo(f"- {'Cleaning' if clean_collections else 'Preserving'} existing collections")
-    click.echo(f"- {'Force (resets sync database)' if force else 'Incremental'} sync mode")
-
-    # Handle clean-only mode
-    if clean_only:
-        from jellytools.cli.syncing import clean_jellyfin_collections
-
-        click.echo("\n--- Cleaning Jellyfin Collections ---")
-        clean_jellyfin_collections(server_manager)
-        click.echo("\n=== Clean Operation Complete ===")
-        return 0
-
-    # Import the sync function
-    from jellytools.cli.syncing import sync_collections
-
-    # Handle skip_images flag with legacy compatibility
-    if skip_images:
-        # Define a wrapper function that overrides the normal collection image sync
-        # Make sure it accepts the sync_db parameter that we added
-        def skip_sync_collection_images(plex_collection, jellyfin_collection_id, jellyfin_client, sync_db, **kwargs):
-            return False
-
-        # Mark the function as patched so we can detect it later
-        skip_sync_collection_images.__patched_to_skip__ = True
-
-        # Save the original function
-        from jellytools.cli.syncing import sync_collection_images as original_sync
-
-        # Replace with our no-op function
-        import jellytools.cli.syncing
-        jellytools.cli.syncing.sync_collection_images = skip_sync_collection_images
-
-    # Run the sync with the chosen options
-    results = sync_collections(
-        server_manager,
-        clean_collections=clean_collections and sync_collections,
-        sync_images=not skip_images,
-        sync_all_artwork=all_artwork,
-        force_sync=force,
-        db_path="jellytools_sync.db"  # Use standard database path
-    )
-
-    # Restore original function if it was patched
-    if skip_images:
-        import jellytools.cli.syncing
-        jellytools.cli.syncing.sync_collection_images = original_sync
-
-    # Display summary
-    click.echo("\n=== Synchronization Complete ===")
-    click.echo(f"Time elapsed: {results['elapsed_time']:.2f} seconds")
-    
-    if sync_collections:
-        click.echo(f"Collections created: {results['collections_created']}")
-        click.echo(f"Collections failed: {results['collections_failed']}")
-        if not skip_images:
-            click.echo(f"Collections with images: {results['collections_with_images']}")
-    
-    if not skip_images:
-        click.echo(f"Media items with images: {results['media_with_images']}")
-        
-    # Restore original logging level
-    logging.getLogger().setLevel(original_level)
-
-    return 0
 
 
 def generate_cli():

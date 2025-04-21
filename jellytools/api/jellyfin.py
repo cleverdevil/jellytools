@@ -1,12 +1,13 @@
 """
-Jellyfin API client for interacting with Jellyfin servers.
+Jellyfin API client wrapper for interacting with Jellyfin servers.
+This is a compatibility layer over jellyfin_apiclient_python.
 """
 
 import logging
-import requests
 import uuid
-from base64 import b64encode
 from typing import Dict, List, Optional, Any
+
+from jellyfin_apiclient_python import JellyfinClient as ThirdPartyClient
 
 # Configure logging
 logging.basicConfig(
@@ -25,160 +26,367 @@ class JellyfinClient:
         Args:
             url (str): Base URL of the Jellyfin server
             api_key (str, optional): API key for authentication
-            username (str, optional): Username for authentication (used if api_key not provided)
-            password (str, optional): Password for authentication (used if api_key not provided)
+            username (str, optional): Username for authentication
+            password (str, optional): Password for authentication
         """
         self.url = url.rstrip("/")
         self.api_key = api_key
         self.username = username
         self.password = password
-        # Generate a unique device ID instead of hardcoding
+        self.authentication_successful = False
+        
+        # Generate a unique device ID
         self.device_id = str(uuid.uuid4())
-        self.auth_header = f'MediaBrowser Client="jellytools", Device="python-script", DeviceId="{self.device_id}", Version="1.0.0"'
         
-        # Set initial headers
-        self._headers = {"Content-Type": "application/json"}
+        # Initialize the third-party client
+        self.client = ThirdPartyClient()
         
-        # Authenticate based on what credentials were provided
-        if api_key:
-            # Use API key auth
-            self._headers["X-Emby-Token"] = api_key
+        # Configure the client
+        self.client.config.app(
+            name="jellytools",
+            version="1.0.0",
+            device_name="python-script",
+            device_id=self.device_id
+        )
+        
+        # Set SSL verification based on URL
+        self.client.config.data["auth.ssl"] = self.url.startswith("https")
+        
+        # Authenticate using the best method available
+        self._authenticate()
+        
+        if not self.authentication_successful:
+            raise ValueError("Failed to authenticate with Jellyfin. Check credentials and server URL.")
+    
+    def _authenticate(self):
+        """Try multiple authentication methods until one succeeds."""
+        # First try with API key if provided
+        if self.api_key:
+            try:
+                self._authenticate_with_api_key()
+                return
+            except Exception as e:
+                logger.warning(f"API key authentication failed: {str(e)}")
+                
+                # If API key authentication failed but we have username/password,
+                # don't give up yet - we'll try that next
+                if not (self.username and self.password):
+                    logger.error("API key authentication failed and no username/password provided")
+                    raise
+        
+        # Try username/password auth if provided
+        if self.username and self.password:
+            try:
+                self._authenticate_with_credentials()
+                return
+            except Exception as e:
+                logger.error(f"Username/password authentication failed: {str(e)}")
+                raise
+        
+        # If we got here with no credentials, raise an error
+        if not self.api_key and not (self.username and self.password):
+            raise ValueError("Either api_key or both username and password must be provided")
             
-            # Get user ID
-            users = self._get("/users")
-            if not users:
+    def _authenticate_with_api_key(self):
+        """Authenticate using API key."""
+        try:
+            # Connect to the server address first
+            result = self.client.auth.connect_to_address(self.url)
+            if not result or 'State' not in result:
+                raise ValueError(f"Failed to connect to server: {self.url}")
+            
+            # Set token directly in all required places
+            self.client.config.data["auth.token"] = self.api_key
+            
+            # Find server ID from the connection result
+            if result.get('Servers') and len(result.get('Servers', [])) > 0:
+                server_id = result['Servers'][0].get('Id')
+                self.client.auth.server_id = server_id
+                
+                # Set server token
+                for server in self.client.auth.credentials.get_credentials().get('Servers', []):
+                    if server.get('Id') == server_id:
+                        server['AccessToken'] = self.api_key
+                        self.client.auth.credentials.set_credentials(self.client.auth.credentials.get_credentials())
+                        break
+            
+            # We need to get user_id for future calls
+            self.client.auth.config.data["auth.server"] = self.url
+            
+            # Start the HTTP session
+            self.client.http.start_session()
+            
+            # Try a direct request to test the token
+            import requests
+            headers = {"X-Emby-Token": self.api_key}
+            test_response = requests.get(f"{self.url}/users", headers=headers)
+            
+            if test_response.status_code != 200:
+                raise ValueError(f"API key authentication failed: HTTP {test_response.status_code}")
+            
+            users = test_response.json()
+            if not users or not isinstance(users, list) or len(users) == 0:
                 raise ValueError("Failed to retrieve Jellyfin users using API key")
+            
             self.user_id = users[0]["Id"]
+            self.client.config.data["auth.user_id"] = self.user_id
+            
+            # Finally, set the user info on the client
+            self.client.logged_in = True
+            self.authentication_successful = True
             
             logger.info(f"Connected to Jellyfin as user ID: {self.user_id} using API key")
-            
-        elif username and password:
-            # Use username/password auth
-            self._headers["Authorization"] = self.auth_header
-            auth_data = {"username": username, "Pw": password}
-            
-            try:
-                # Authenticate to get token
-                auth_result = self._post("/Users/AuthenticateByName", data=auth_data)
-                self.api_key = auth_result.get("AccessToken")
-                self.user_id = auth_result.get("User").get("Id")
-                
-                # Update headers with token
-                self._headers["X-Emby-Token"] = self.api_key
-                
-                logger.info(f"Connected to Jellyfin as user {username} (ID: {self.user_id})")
-                
-            except Exception as e:
-                raise ValueError(f"Failed to authenticate with Jellyfin: {e}")
-                
-        else:
-            raise ValueError("Either api_key or both username and password must be provided")
-
-    def _request(
-        self,
-        verb: str,
-        path: str,
-        params: Optional[Dict] = None,
-        data: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        binary_data: Optional[bytes] = None,
-        raw_response: bool = False,
-    ):
-        """
-        Make an HTTP request to the Jellyfin API.
-
-        Args:
-            verb (str): HTTP method (get, post, delete)
-            path (str): API endpoint path
-            params (dict): Query parameters
-            data (dict): Request body data for POST requests (JSON)
-            headers (dict): Optional headers to override defaults
-            binary_data (bytes): Raw binary data for POST requests
-            raw_response (bool): Return raw response
-
-        Returns:
-            dict, bytes, or response object: JSON response from the API, raw bytes,
-            or raw response object
-        """
-        # Make sure path starts with a slash
-        if not path.startswith("/"):
-            path = "/" + path
-
-        # Build the full URL
-        full_url = f"{self.url}{path}"
-        params = params or {}
-
-        # Use provided headers or default headers
-        request_headers = headers or self._headers.copy()
-
-        try:
-            if verb.lower() == "get":
-                r = requests.get(full_url, headers=request_headers, params=params)
-            elif verb.lower() == "post":
-                if binary_data:
-                    r = requests.post(
-                        full_url,
-                        headers=request_headers,
-                        params=params,
-                        data=binary_data,
-                    )
-                elif data:
-                    r = requests.post(
-                        full_url, headers=request_headers, params=params, json=data
-                    )
-                else:
-                    r = requests.post(full_url, headers=request_headers, params=params)
-            elif verb.lower() == "delete":
-                r = requests.delete(full_url, headers=request_headers, params=params)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {verb}")
-
-            r.raise_for_status()
-
-            if raw_response:
-                return r
-
-            # If the response is JSON, parse it; otherwise return raw content
-            if "application/json" in r.headers.get("Content-Type", ""):
-                return r.json() if r.content else {}
-            return r.content
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error ({verb.upper()} {path}): {e}")
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    if "application/json" in e.response.headers.get("Content-Type", ""):
-                        error_msg = e.response.json()
-                        logger.error(f"Server response: {error_msg}")
-                    else:
-                        logger.error(f"Status code: {e.response.status_code}")
-                        logger.error(f"Response text: {e.response.text[:200]}...")
-                except Exception as parse_error:
-                    logger.error(f"Failed to parse error response: {parse_error}")
-                    logger.error(f"Status code: {e.response.status_code}")
-                    logger.error(
-                        f"Response text: {e.response.text[:200] if hasattr(e.response, 'text') else 'No text'}..."
-                    )
+        except Exception as e:
+            logger.error(f"API key authentication error: {str(e)}")
             raise
-
+    
+    def _authenticate_with_credentials(self):
+        """Authenticate using username and password."""
+        try:
+            # Bypass the complex auth flow of the library and use a direct request
+            # This is more reliable and gives us more control over the process
+            import requests
+            import json
+            
+            # Set up the auth endpoint
+            auth_url = f"{self.url}/Users/AuthenticateByName"
+            
+            # Create auth data
+            auth_data = {
+                "Username": self.username,
+                "Pw": self.password
+            }
+            
+            # Set required headers
+            headers = {
+                "Content-Type": "application/json",
+                "X-Emby-Authorization": f'MediaBrowser Client="jellytools", Device="python-script", DeviceId="{self.device_id}", Version="1.0.0"'
+            }
+            
+            # Make the direct request
+            auth_response = requests.post(auth_url, headers=headers, json=auth_data)
+            
+            if auth_response.status_code != 200:
+                raise ValueError(f"Failed to authenticate: HTTP {auth_response.status_code} - {auth_response.text}")
+            
+            # Parse the response
+            result = auth_response.json()
+            
+            if not result or "AccessToken" not in result or "User" not in result:
+                raise ValueError(f"Invalid authentication response: {json.dumps(result)}")
+            
+            # Store user_id and token for future use
+            self.user_id = result["User"]["Id"]
+            self.api_key = result["AccessToken"]
+            
+            # Initialize the client with our successful auth
+            self.client.http.start_session()
+            self.client.logged_in = True
+            
+            # Ensure auth configuration is properly set
+            self.client.config.data["auth.server"] = self.url
+            self.client.config.data["auth.user_id"] = self.user_id
+            self.client.config.data["auth.token"] = self.api_key
+            
+            # Set the server ID for future API calls
+            if 'ServerId' in result:
+                self.client.auth.server_id = result['ServerId']
+            
+            # Mark authentication as successful
+            self.authentication_successful = True
+            
+            logger.info(f"Connected to Jellyfin as user {self.username} (ID: {self.user_id})")
+            
+        except Exception as e:
+            logger.error(f"Username/password authentication error: {str(e)}")
+            raise
+    
     def _get(self, path: str, params: Optional[Dict] = None) -> Dict:
         """Make a GET request to the Jellyfin API."""
-        return self._request("get", path, params)
-
-    def _post(
-        self,
-        path: str,
-        params: Optional[Dict] = None,
-        data: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
-        binary_data: Optional[bytes] = None,
-    ) -> Dict:
+        path = path.lstrip("/")
+        try:
+            # Use direct requests approach instead of the client
+            import requests
+            
+            # Build the full URL - replace any placeholders
+            full_url = f"{self.url}/{path}"
+            if hasattr(self, 'user_id') and self.user_id:
+                full_url = full_url.replace("{UserId}", self.user_id)
+            
+            # Set up headers with authentication
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            if self.api_key:
+                headers["X-Emby-Token"] = self.api_key
+            
+            # Make the direct request 
+            response = requests.get(full_url, headers=headers, params=params)
+            
+            if response.status_code >= 400:
+                logger.error(f"GET {path} failed with status {response.status_code}: {response.text}")
+                return {}
+            
+            # Return empty dict for empty responses
+            if not response.content:
+                return {}
+            
+            # Parse JSON responses
+            if response.headers.get("Content-Type", "").startswith("application/json"):
+                return response.json()
+            
+            # Return raw content for other responses
+            return {"content": response.content}
+            
+        except Exception as e:
+            logger.error(f"Request error (GET {path}): {e}")
+            return {}
+    
+    def _post(self, path: str, params: Optional[Dict] = None, data: Optional[Dict] = None) -> Dict:
         """Make a POST request to the Jellyfin API."""
-        return self._request("post", path, params, data, headers, binary_data)
-
+        path = path.lstrip("/")
+        try:
+            # Use direct requests approach instead of the client
+            import requests
+            
+            # Build the full URL - replace any placeholders
+            full_url = f"{self.url}/{path}"
+            if hasattr(self, 'user_id') and self.user_id:
+                full_url = full_url.replace("{UserId}", self.user_id)
+            
+            # Set up headers with authentication
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            if self.api_key:
+                headers["X-Emby-Token"] = self.api_key
+            
+            # Make the direct request
+            response = requests.post(full_url, headers=headers, params=params, json=data if data else None)
+            
+            if response.status_code >= 400:
+                logger.error(f"POST {path} failed with status {response.status_code}: {response.text}")
+                return {}
+            
+            # Return empty dict for empty responses
+            if not response.content:
+                return {}
+            
+            # Parse JSON responses
+            if response.headers.get("Content-Type", "").startswith("application/json"):
+                return response.json()
+                
+            # Return raw content for other responses
+            return {"content": response.content}
+            
+        except Exception as e:
+            logger.error(f"Request error (POST {path}): {e}")
+            return {}
+    
     def _delete(self, path: str, params: Optional[Dict] = None) -> Dict:
         """Make a DELETE request to the Jellyfin API."""
-        return self._request("delete", path, params)
+        path = path.lstrip("/")
+        try:
+            # Use direct requests approach instead of the client
+            import requests
+            
+            # Build the full URL - replace any placeholders
+            full_url = f"{self.url}/{path}"
+            if hasattr(self, 'user_id') and self.user_id:
+                full_url = full_url.replace("{UserId}", self.user_id)
+            
+            # Set up headers with authentication
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            if self.api_key:
+                headers["X-Emby-Token"] = self.api_key
+            
+            # Make the direct request
+            response = requests.delete(full_url, headers=headers, params=params)
+            
+            if response.status_code >= 400:
+                logger.error(f"DELETE {path} failed with status {response.status_code}: {response.text}")
+                return {}
+            
+            # Return empty dict for empty responses
+            if not response.content:
+                return {}
+            
+            # Parse JSON responses
+            if response.headers.get("Content-Type", "").startswith("application/json"):
+                return response.json()
+                
+            # Return raw content for other responses
+            return {"content": response.content}
+            
+        except Exception as e:
+            logger.error(f"Request error (DELETE {path}): {e}")
+            return {}
+
+    def _request(self, verb: str, path: str, params: Optional[Dict] = None,
+                data: Optional[Dict] = None, headers: Optional[Dict] = None,
+                binary_data: Optional[bytes] = None, raw_response: bool = False):
+        """
+        Legacy compatibility method for making HTTP requests to the Jellyfin API.
+        """
+        import requests
+        
+        # Build the full URL
+        full_url = f"{self.url}/{path.lstrip('/')}"
+        if hasattr(self, 'user_id') and self.user_id:
+            full_url = full_url.replace("{UserId}", self.user_id)
+            
+        # Set up default headers
+        request_headers = {
+            "Content-Type": "application/json"
+        }
+        
+        # Add authentication token
+        if self.api_key:
+            request_headers["X-Emby-Token"] = self.api_key
+            
+        # Merge with any custom headers
+        if headers:
+            request_headers.update(headers)
+            
+        try:
+            if verb.lower() == "get":
+                response = requests.get(full_url, headers=request_headers, params=params)
+            elif verb.lower() == "post":
+                if binary_data:
+                    response = requests.post(full_url, headers=request_headers, params=params, data=binary_data)
+                elif data:
+                    response = requests.post(full_url, headers=request_headers, params=params, json=data)
+                else:
+                    response = requests.post(full_url, headers=request_headers, params=params)
+            elif verb.lower() == "delete":
+                response = requests.delete(full_url, headers=request_headers, params=params)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {verb}")
+                
+            # Check for errors
+            response.raise_for_status()
+            
+            # Return the raw response if requested
+            if raw_response:
+                return response
+                
+            # Otherwise parse the content appropriately
+            if "application/json" in response.headers.get("Content-Type", ""):
+                return response.json() if response.content else {}
+                
+            # Return raw content for non-JSON responses
+            return response.content
+            
+        except Exception as e:
+            logger.error(f"Request error ({verb.upper()} {path}): {e}")
+            if raw_response:
+                return None
+            return {}
 
     def items_list(
         self,
@@ -228,123 +436,14 @@ class JellyfinClient:
             dict: Item details
         """
         try:
-            return self._get(f"/Users/{self.user_id}/Items/{item_id}")
+            return self.client.jellyfin.get_item(item_id)
         except Exception as e:
             logger.error(f"Error getting item {item_id}: {e}")
             return {}
 
-    def create_collection(self, name: str, ids: List[str]) -> Dict:
-        """
-        Create a new collection with the given items, handling large collections by creating
-        them in chunks to avoid URL length limitations.
 
-        Args:
-            name (str): Collection name
-            ids (list): List of item IDs to include
 
-        Returns:
-            dict: Collection details
-        """
-        if not ids:
-            return {"Status": "No items to add to collection"}
 
-        # First, create an empty collection
-        logger.info(f"Creating collection '{name}'...")
-        result = self._post("/Collections", {"Name": name, "Ids": ""})
-
-        if not result or "Id" not in result:
-            raise Exception(f"Failed to create collection: {result}")
-
-        collection_id = result["Id"]
-
-        # Then add items in chunks to avoid URL length limitations
-        CHUNK_SIZE = 50  # Adjust based on your server's limitations
-        total_chunks = (len(ids) + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-        for i in range(0, len(ids), CHUNK_SIZE):
-            chunk = ids[i : i + CHUNK_SIZE]
-            chunk_num = (i // CHUNK_SIZE) + 1
-            logger.info(
-                f"Adding chunk {chunk_num}/{total_chunks} ({len(chunk)} items) to collection '{name}'..."
-            )
-
-            try:
-                # Add items to the collection
-                self._post(
-                    f"/Collections/{collection_id}/Items", {"Ids": ",".join(chunk)}
-                )
-            except Exception as e:
-                logger.error(
-                    f"Error adding chunk {chunk_num} to collection '{name}': {e}"
-                )
-                # Continue with next chunk even if this one fails
-
-        return {
-            "Status": f"Collection '{name}' created with {len(ids)} items in {total_chunks} chunks",
-            "Id": collection_id,
-        }
-
-    def add_to_collection(self, collection_id: str, ids: List[str]) -> Dict:
-        """
-        Add items to an existing collection.
-
-        Args:
-            collection_id (str): Collection ID
-            ids (list): List of item IDs to add
-
-        Returns:
-            dict: Response from the server
-        """
-        if not ids:
-            return {"Status": "No items to add"}
-
-        # Add items in chunks to avoid URL length limitations
-        CHUNK_SIZE = 50  # Adjust based on your server's limitations
-        total_chunks = (len(ids) + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-        for i in range(0, len(ids), CHUNK_SIZE):
-            chunk = ids[i : i + CHUNK_SIZE]
-            chunk_num = (i // CHUNK_SIZE) + 1
-            logger.info(
-                f"Adding chunk {chunk_num}/{total_chunks} ({len(chunk)} items) to collection..."
-            )
-
-            try:
-                # Add items to the collection
-                self._post(
-                    f"/Collections/{collection_id}/Items", {"Ids": ",".join(chunk)}
-                )
-            except Exception as e:
-                logger.error(f"Error adding chunk {chunk_num} to collection: {e}")
-                # Continue with next chunk even if this one fails
-
-        return {
-            "Status": f"Added {len(ids)} items to collection in {total_chunks} chunks"
-        }
-
-    def remove_collection(self, collection_id: str) -> Dict:
-        """
-        Delete a collection.
-
-        Args:
-            collection_id (str): Collection ID
-
-        Returns:
-            dict: Response from the server
-        """
-        return self._delete(f"/Items/{collection_id}")
-
-    def collections_list(self) -> Dict:
-        """
-        Get all collections.
-
-        Returns:
-            dict: List of collections
-        """
-        return self._get(
-            f"/Users/{self.user_id}/Items",
-            {"IncludeItemTypes": "BoxSet", "Recursive": "true"},
-        )
 
     def libraries_list(self) -> Dict:
         """
@@ -353,10 +452,9 @@ class JellyfinClient:
         Returns:
             dict: List of libraries with their details
         """
-        # Use the /Library/MediaFolders endpoint to get all media folders
-        # This is more reliable than filtering the root items
+        # Use the third-party client's media_folders method
         try:
-            return self._get("/Library/MediaFolders")
+            return self.client.jellyfin.media_folders()
         except Exception as e:
             logger.error(f"Error listing libraries: {e}")
             return {"Items": []}
@@ -393,141 +491,34 @@ class JellyfinClient:
         Returns:
             Optional[Dict[str, Any]]: Dictionary with image data and extension, or None if not found
         """
-        url = f"/Items/{item_id}/Images/{image_type}/0"
+        # We need to use the raw HTTP client to get the image data
         try:
-            response = self._request(verb="get", path=url, raw_response=True)
-
+            # Fall back to direct HTTP request if the client method doesn't work
+            url = f"{self.url}/Items/{item_id}/Images/{image_type}"
+            headers = {}
+            
+            # Add authentication token if available
+            if self.api_key:
+                headers["X-Emby-Token"] = self.api_key
+            
+            # Make a direct HTTP request using requests
+            import requests
+            response = requests.get(url, headers=headers)
+            
             if response.status_code != 200:
-                logger.debug(f"Image not found for item {item_id}, type {image_type}")
+                logger.debug(f"Image not found for item {item_id}, type {image_type}, status: {response.status_code}")
                 return None
-
+            
+            # Determine the image extension from content type
+            content_type = response.headers.get("content-type", "")
             extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(
-                response.headers.get("content-type", ""), "jpg"
+                content_type, "jpg"
             )
-
+            
             return {"image_data": response.content, "extension": extension}
         except Exception as e:
             logger.error(f"Error downloading image for item {item_id}: {e}")
             return None
 
-    def upload_image(
-        self, item_id: str, image_type: str, image_data: bytes, image_ext: str = "jpg"
-    ) -> bool:
-        """
-        Upload an image to an item in Jellyfin using base64 encoding.
-
-        Args:
-            item_id (str): ID of the item
-            image_type (str): Type of image ('Primary', 'Backdrop', etc.)
-            image_data (bytes): Raw image data
-            image_ext (str): Image extension to determine content type
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            # First check if the item exists and is accessible
-            if not self.item_exists(item_id):
-                logger.error(f"Cannot upload image to item {item_id} - it does not exist or is not accessible")
-                return False
             
-            # Determine content type based on extension
-            content_type = {
-                "png": "image/png",
-                "jpg": "image/jpeg",
-                "jpeg": "image/jpeg",
-                "webp": "image/webp",
-            }.get(image_ext.lower(), "image/jpeg")
-
-            # Base64 encode the image data
-            encoded_data = b64encode(image_data)
-
-            # Set up the URL and headers - try user-specific endpoint first
-            url = f"/Items/{item_id}/Images/{image_type}/0"
-            headers = {"X-Emby-Token": self.api_key, "Content-Type": content_type}
-
-            # Make the request
-            self._post(url, headers=headers, binary_data=encoded_data)
-            logger.info(f"Successfully uploaded {image_type} image for item {item_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to upload image for item {item_id}: {e}")
-            return False
-            
-    def item_exists(self, item_id: str) -> bool:
-        """
-        Check if an item exists and is accessible to the current user.
-        
-        Args:
-            item_id (str): Jellyfin item ID
-            
-        Returns:
-            bool: True if the item exists and is accessible, False otherwise
-        """
-        try:
-            item_metadata = self._get(f"/Users/{self.user_id}/Items/{item_id}")
-            return bool(item_metadata and "Id" in item_metadata)
-        except Exception as e:
-            logger.debug(f"Item {item_id} does not exist or is not accessible: {e}")
-            return False
     
-    def check_image_exists(self, item_id: str, image_type: str, detailed_logging: bool = False) -> bool:
-        """
-        Check if an image of the specified type already exists for an item.
-        
-        Args:
-            item_id (str): Jellyfin item ID
-            image_type (str): Image type (Primary, Backdrop, etc.)
-            detailed_logging (bool): Whether to log detailed debug information
-            
-        Returns:
-            bool: True if image exists, False otherwise
-        """
-        try:
-            # First get the item details using the user-specific endpoint
-            # This is safer than directly using /Items/{id}
-            item_details = self._get(f"/Users/{self.user_id}/Items/{item_id}")
-            item_name = item_details.get("Name", "Unknown")
-            item_type = item_details.get("Type", "Unknown")
-            
-            # Use the metadata to check for images, which is more reliable
-            # Check for primary image
-            if image_type == "Primary" and "ImageTags" in item_details:
-                has_primary = item_details.get("ImageTags", {}).get("Primary", False)
-                if has_primary:
-                    if detailed_logging:
-                        logger.debug(f"Primary image exists for {item_type} '{item_name}' (ID: {item_id})")
-                    return True
-            
-            # Check for backdrop image
-            if image_type == "Backdrop" and "BackdropImageTags" in item_details:
-                backdrop_tags = item_details.get("BackdropImageTags", [])
-                if backdrop_tags and len(backdrop_tags) > 0:
-                    if detailed_logging:
-                        logger.debug(f"Backdrop image exists for {item_type} '{item_name}' (ID: {item_id})")
-                    return True
-                    
-            # Check for banner image - many items don't support banner images
-            if image_type == "Banner" and "ImageTags" in item_details:
-                has_banner = item_details.get("ImageTags", {}).get("Banner", False)
-                if has_banner:
-                    if detailed_logging:
-                        logger.debug(f"Banner image exists for {item_type} '{item_name}' (ID: {item_id})")
-                    return True
-                    
-                # For items without Banner support, return True to avoid unnecessary requests
-                if image_type == "Banner" and item_type in ["Movie", "Episode"]:
-                    if detailed_logging:
-                        logger.debug(f"Banner image not supported for {item_type} '{item_name}' (skipping)")
-                    return True
-            
-            # If no image found for the given type and content type supports it, return False
-            if detailed_logging:
-                logger.debug(f"No {image_type} image found for {item_type} '{item_name}' (ID: {item_id})")
-            return False
-                
-        except Exception as e:
-            logger.warning(f"Error checking if image exists for item {item_id}: {e}")
-            # If we can't check, assume it doesn't exist
-            return False
