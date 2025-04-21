@@ -20,10 +20,6 @@ class JellytoolsConfig:
     JELLYFIN_API_KEY: Optional[str] = None
     JELLYFIN_LIBRARIES: List[str] = None
 
-    # Plex is used for syncing posters and collections
-    PLEX_URL: Optional[str] = None
-    PLEX_TOKEN: Optional[str] = None
-    PLEX_LIBRARIES: List[str] = None
 
     # General configuration
     POSTER_DIRECTORY: str = "posters"
@@ -44,8 +40,6 @@ class JellytoolsConfig:
 
     def __post_init__(self):
         """Initialize default lists and dictionaries if None."""
-        if self.PLEX_LIBRARIES is None:
-            self.PLEX_LIBRARIES = []
         if self.JELLYFIN_LIBRARIES is None:
             self.JELLYFIN_LIBRARIES = []
         if self.LIBRARY_ANIMATIONS is None:
@@ -218,15 +212,10 @@ def create_default_config_file(path: str) -> bool:
     """
     default_config = """# Jellytools configuration file
 
-# Jellyfin server configuration (primary)
+# Jellyfin server configuration
 JELLYFIN_URL = "http://localhost:8096"
 JELLYFIN_API_KEY = ""
 JELLYFIN_LIBRARIES = ["Movies", "TV Shows"]
-
-# Plex server configuration (used for syncing)
-PLEX_URL = "http://localhost:32400"
-PLEX_TOKEN = ""
-PLEX_LIBRARIES = ["Movies", "TV Shows"]
 
 # General configuration
 POSTER_DIRECTORY = "posters"

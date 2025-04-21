@@ -5,9 +5,8 @@ import os
 import sys
 import logging
 import pathlib
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
-from plexapi.server import PlexServer
 from jellytools.api.jellyfin import JellyfinClient
 from jellytools.core.config import get_config
 
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ServerManager:
-    """Manages connections to media servers (Plex, Jellyfin)"""
+    """Manages connection to the Jellyfin media server"""
 
     def __init__(self):
         """Initialize the server manager and connect to configured servers."""
@@ -23,34 +22,31 @@ class ServerManager:
         self._connect_to_servers()
 
     def _connect_to_servers(self):
-        """Connect to all configured media servers."""
+        """Connect to the Jellyfin media server."""
         config = get_config()
-
-        if hasattr(config, "PLEX_URL") and hasattr(config, "PLEX_TOKEN"):
-            logger.info(f"Connecting to Plex at {config.PLEX_URL}...")
-            try:
-                self.servers["plex"] = PlexServer(config.PLEX_URL, config.PLEX_TOKEN)
-                logger.info("Successfully connected to Plex")
-            except Exception as e:
-                logger.error(f"Failed to connect to Plex: {e}")
 
         # Connect to Jellyfin - support both API key and username/password authentication
         if hasattr(config, "JELLYFIN_URL"):
             logger.info(f"Connecting to Jellyfin at {config.JELLYFIN_URL}...")
             try:
-                # First try API key auth
+                # Always provide both auth methods if available
+                kwargs = {
+                    "url": config.JELLYFIN_URL
+                }
+                
+                # Add API key if available
                 if hasattr(config, "JELLYFIN_API_KEY") and config.JELLYFIN_API_KEY:
-                    self.servers["jellyfin"] = JellyfinClient(
-                        url=config.JELLYFIN_URL, 
-                        api_key=config.JELLYFIN_API_KEY
-                    )
-                # Otherwise try username/password auth
-                elif hasattr(config, "JELLYFIN_USERNAME") and hasattr(config, "JELLYFIN_PASSWORD"):
-                    self.servers["jellyfin"] = JellyfinClient(
-                        url=config.JELLYFIN_URL, 
-                        username=config.JELLYFIN_USERNAME,
-                        password=config.JELLYFIN_PASSWORD
-                    )
+                    kwargs["api_key"] = config.JELLYFIN_API_KEY
+                
+                # Add username/password if available
+                if hasattr(config, "JELLYFIN_USERNAME") and hasattr(config, "JELLYFIN_PASSWORD"):
+                    kwargs["username"] = config.JELLYFIN_USERNAME
+                    kwargs["password"] = config.JELLYFIN_PASSWORD
+                
+                # Check if we have enough credentials to connect
+                if "api_key" in kwargs or ("username" in kwargs and "password" in kwargs):
+                    logger.info(f"Connecting to Jellyfin with {', '.join(k for k in kwargs.keys() if k != 'url')} auth...")
+                    self.servers["jellyfin"] = JellyfinClient(**kwargs)
                 else:
                     logger.error("No valid Jellyfin credentials found. Need either API_KEY or USERNAME+PASSWORD")
                     
@@ -69,65 +65,90 @@ class ServerManager:
         else:
             logger.warning("Jellyfin server not configured - some features may not work")
 
-        if "plex" in self.servers:
-            logger.info("Plex server connected and available for syncing")
-        else:
-            logger.info("Plex server not configured - syncing operations will be unavailable")
-
-
-    def download_jellyfin_posters(self) -> Dict[str, Any]:
+    def download_jellyfin_posters(self, libraries: List[str] = None) -> Dict[str, Any]:
         """
         Download jellyfin primary posters.
 
+        Args:
+            libraries (List[str], optional): List of library names to process.
+                                           If None, all configured libraries will be processed.
+
         Returns:
-            Dict[str, Any]: Dictionary of media items
+            Dict[str, Any]: Dictionary with download statistics
+                Format: {
+                    'downloaded': {library_name: count, ...},
+                    'skipped': {library_name: count, ...}
+                }
         """
         config = get_config()
 
         if "jellyfin" not in self.servers:
             logger.warning("Jellyfin server not configured. Skipping poster download.")
-            return {}
+            return {'downloaded': {}, 'skipped': {}}
 
-        jf_media = {}
         jellyfin = self.servers["jellyfin"]
+        
+        # Statistics to return
+        stats = {
+            'downloaded': {},
+            'skipped': {}
+        }
+        
+        # Use all configured libraries if none specified
+        if libraries is None:
+            libraries = config.JELLYFIN_LIBRARIES
 
-        # Process each library type configured in JELLYFIN_LIBRARIES
-        for library_name in config.JELLYFIN_LIBRARIES:
-            logger.info(f"Fetching Jellyfin {library_name} library...")
+        # Get all libraries from Jellyfin
+        library_result = jellyfin.libraries_list()
+        jellyfin_libraries = library_result.get("Items", [])
+        
+        # Map of library names to IDs for faster lookup
+        library_map = {
+            lib.get("Name"): lib.get("Id") 
+            for lib in jellyfin_libraries 
+            if lib.get("Name") and lib.get("Id")
+        }
+        
+        # Fallback method if libraries not found
+        if not library_map:
+            logger.warning("No libraries found using standard method, trying alternative...")
+            items = jellyfin.items_list()
+            for item in items.get("Items", []):
+                if item.get("Type") in ["CollectionFolder", "UserView", "Folder"] and item.get("Name"):
+                    library_map[item.get("Name")] = item.get("Id")
 
-            # Get all libraries using the dedicated method
-            library_result = jellyfin.libraries_list()
-            libraries = library_result.get("Items", [])
+        # Process each library
+        for library_name in libraries:
+            logger.info(f"Processing Jellyfin {library_name} library...")
+            
+            # Initialize stats for this library
+            stats['downloaded'][library_name] = 0
+            stats['skipped'][library_name] = 0
 
             # Find the library by name
-            library_items = [lib for lib in libraries if lib.get("Name") == library_name]
-
-            if not library_items:
+            library_id = library_map.get(library_name)
+            
+            if not library_id:
                 logger.warning(f"No '{library_name}' library found in Jellyfin")
-
+                
                 # Print available libraries for debugging
-                available_libraries = [lib.get("Name", "Unknown") for lib in libraries]
+                available_libraries = list(library_map.keys())
                 if available_libraries:
                     logger.info(f"Available libraries: {', '.join(available_libraries)}")
                 else:
                     logger.warning("No libraries were found on the server")
+                
+                # Skip this library
+                continue
 
-                # Fall back to the old method as a backup
-                logger.info("Trying alternative method to find the library...")
-                items = jellyfin.items_list()
-                for item in items.get("Items", []):
-                    if item.get("Name") == library_name and item.get("Type") in ["CollectionFolder", "UserView", "Folder"]:
-                        library_items = [item]
-                        logger.info(f"Found library {library_name} using alternative method")
-                        break
-
-                if not library_items:
-                    logger.warning(f"Still couldn't find library {library_name}. Skipping.")
-                    continue
-
-            library_id = library_items[0]["Id"]
-            library_type = library_items[0].get("CollectionType", library_items[0].get("Type", "Unknown"))
-            logger.info(f"Processing {library_name} (type: {library_type})")
+            # Get library type for filtering
+            library_type = None
+            for lib in jellyfin_libraries:
+                if lib.get("Id") == library_id:
+                    library_type = lib.get("CollectionType", lib.get("Type", "Unknown"))
+                    break
+                    
+            logger.info(f"Processing {library_name} (type: {library_type or 'Unknown'})")
 
             # Use recursive parameter to get all items at once with all fields
             library_contents = jellyfin.items_list(
@@ -135,20 +156,25 @@ class ServerManager:
             )
 
             # Create library directory
-            poster_path = pathlib.Path("/".join((config.POSTER_DIRECTORY, library_name)))
-            os.makedirs(poster_path, exist_ok=True)
+            poster_path = pathlib.Path(config.POSTER_DIRECTORY) / library_name
+            poster_path.mkdir(parents=True, exist_ok=True)
 
             # List items for later use
-            existing_files = os.listdir(poster_path)
+            existing_files = list(poster_path.iterdir())
 
             def poster_exists(item):
-                return bool([fn for fn in existing_files if item["Id"] in fn])
+                return bool([fn for fn in existing_files if item["Id"] in fn.name])
 
-            # Process each item, fetching the primary image and saving it to a
-            # our target directory
-            item_count = 0
+            # Process each item, fetching the primary image
+            download_count = 0
             skipped_count = 0
+            processed_count = 0
+            
             for item in library_contents.get("Items", []):
+                processed_count += 1
+                if processed_count % 100 == 0:
+                    logger.info(f"Processed {processed_count} items in {library_name}...")
+                
                 # Special handling for different library types
                 item_type = item.get("Type", "")
 
@@ -165,37 +191,41 @@ class ServerManager:
                 # Skip already downloaded posters
                 if poster_exists(item):
                     skipped_count += 1
+                    stats['skipped'][library_name] += 1
                     continue
-
-                item_count += 1
-                if item_count % 100 == 0:
-                    logger.info(f"Processed {item_count} items in {library_name}...")
 
                 # Download primary image
                 try:
                     response = jellyfin.download_image(item["Id"])
                     if not response:
-                        logger.info(f"No poster available for item {item['Id']} ({item.get('Name', 'Unknown')})")
+                        logger.debug(f"No poster available for item {item['Id']} ({item.get('Name', 'Unknown')})")
                         continue
                 except Exception as e:
-                    logger.info(f"Unable to download poster for item {item['Id']} ({item.get('Name', 'Unknown')}): {e}")
+                    logger.debug(f"Unable to download poster for item {item['Id']} ({item.get('Name', 'Unknown')}): {e}")
                     continue
 
                 # Determine poster file path
-                filename = poster_path / ".".join((item["Id"], response["extension"]))
+                filename = poster_path / f"{item['Id']}.{response['extension']}"
 
                 # Write to output directory
                 with open(filename, "wb") as f:
                     f.write(response["image_data"])
+                    
+                download_count += 1
+                stats['downloaded'][library_name] += 1
 
             logger.info(
-                f"Downloaded {item_count} and skipped {skipped_count} posters from {library_name}."
+                f"Downloaded {download_count} and skipped {skipped_count} posters from {library_name}."
             )
 
+        # Calculate totals for logging
+        total_downloaded = sum(stats['downloaded'].values())
+        total_skipped = sum(stats['skipped'].values())
         logger.info(
-            f"Total: Found {len(jf_media)} media items across all Jellyfin libraries"
+            f"Total: Downloaded {total_downloaded} new images, skipped {total_skipped} existing images"
         )
-        return jf_media
+        
+        return stats
 
     def get_jellyfin_client(self) -> Optional[JellyfinClient]:
         """
@@ -205,12 +235,3 @@ class ServerManager:
             Optional[JellyfinClient]: Jellyfin client or None if not available
         """
         return self.servers.get("jellyfin")
-
-    def get_plex_client(self) -> Optional[PlexServer]:
-        """
-        Get the Plex client if available.
-
-        Returns:
-            Optional[PlexServer]: Plex client or None if not available
-        """
-        return self.servers.get("plex")
