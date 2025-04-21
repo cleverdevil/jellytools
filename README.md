@@ -279,6 +279,13 @@ To use the generated JavaScript with Jellyfin, you need to install the Custom Ja
 
 This project was developed by [Jonathan LaCour](https://cleverdevil.io).
 
+## What Happened to Collection Sync?
+
+Jellytools used to contain a feature to sync collections from Plex to Jellyfin.
+The functionality has been removed to make this project 100% focused on
+Jellyfin. But, good news, this functionality is now available in
+[Plexyfin](https://github.com/cleverdevil/Plexyfin).
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
