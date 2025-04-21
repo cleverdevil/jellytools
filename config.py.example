@@ -1,7 +1,3 @@
-# Plex server configuration
-PLEX_URL = "http://your-plex-server:32400"
-PLEX_TOKEN = "your-plex-token"
-
 # Jellyfin server configuration
 JELLYFIN_URL = "http://your-jellyfin-server:8096"
 
@@ -12,7 +8,6 @@ JELLYFIN_API_KEY = "your-jellyfin-api-key"
 # JELLYFIN_PASSWORD = "your-jellyfin-password"
 
 # Libraries to process
-PLEX_LIBRARIES = ["Movies", "TV Shows"]
 JELLYFIN_LIBRARIES = ["Movies", "Shows", "Collections"]
 
 # General configuration

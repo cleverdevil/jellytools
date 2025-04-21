@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/b8130d64-9e72-478f-8c00-27c0aafda385
 
 - Generate animated library cards from media posters in high-quality MP4 video format
 - Multiple animation styles: grid, waterfall, spiral, mosaic, vortex, cascade, explode, kaleidoscope, and shockwave
-- Synchronize collections and artwork from Plex to Jellyfin
+- Download poster artwork from Jellyfin libraries
 - Generate custom JavaScript for Jellyfin to add video backgrounds to library cards
 
 ## Installation
@@ -35,7 +35,6 @@ pip install -e .
 - Required Python packages (automatically installed):
   - pygame
   - opencv-python
-  - plexapi
   - requests
   - click
 
@@ -51,7 +50,7 @@ cp config.py.example config.py
 jellytools init
 ```
 
-2. Edit the `config.py` file with your Jellyfin/Plex server details (this file is gitignored for security)
+2. Edit the `config.py` file with your Jellyfin server details (this file is gitignored for security)
 
 3. Generate library card animations:
 
@@ -70,7 +69,7 @@ jellytools generate-js
 The configuration file (`config.py`) contains the following settings:
 
 ```python
-# Jellyfin server configuration (primary)
+# Jellyfin server configuration
 JELLYFIN_URL = "http://localhost:8096"
 # Authentication options (use either API key or username/password)
 JELLYFIN_API_KEY = "your-jellyfin-api-key"
@@ -78,11 +77,6 @@ JELLYFIN_API_KEY = "your-jellyfin-api-key"
 # JELLYFIN_USERNAME = "your-jellyfin-username"
 # JELLYFIN_PASSWORD = "your-jellyfin-password"
 JELLYFIN_LIBRARIES = ["Movies", "TV Shows", "Collections"]
-
-# Plex server configuration (used for syncing)
-PLEX_URL = "http://localhost:32400"
-PLEX_TOKEN = "your-plex-token"
-PLEX_LIBRARIES = ["Movies", "TV Shows"]
 
 # General configuration
 POSTER_DIRECTORY = "posters"
@@ -176,39 +170,20 @@ jellytools generate-js --output my-override.js
 
 The JavaScript will add hidden videos to Jellyfin library cards while maintaining their original appearance. The videos will play when a user hovers over a library card.
 
-### Sync Collections and Artwork from Plex to Jellyfin
-
-By default, `jellytools sync` will:
-- Clean existing collections in Jellyfin
-- Create new collections in Jellyfin based on Plex collections
-- Sync all artwork types (posters, backdrops, banners) for all media
-- Skip previously synced items (incremental sync using SQLite database)
-- Match items between Plex and Jellyfin using IMDb IDs when available, with title-based matching as fallback for items without IMDb IDs
+### Download Poster Artwork from Jellyfin
 
 ```bash
-# Sync everything (default behavior)
-jellytools sync
+# Download poster artwork for all configured libraries
+jellytools posters fetch
 
-# Only sync primary/poster images (skip backdrops and banners)
-jellytools sync --primary-only
+# Clean existing poster artwork before downloading
+jellytools posters fetch --clean-first
 
-# Skip collections and only sync artwork
-jellytools sync --skip-collections
+# Only download artwork for specific libraries
+jellytools posters fetch --libraries "Movies,TV Shows"
 
-# Preserve existing collections (don't delete them)
-jellytools sync --preserve-collections
-
-# Only sync collections, skip all artwork
-jellytools sync --skip-images
-
-# Only clean existing collections in Jellyfin
-jellytools sync --clean-only
-
-# Sync all artwork but skip collections
-jellytools sync --skip-collections --sync-images --all-artwork
-
-# Force sync all items (clears database and syncs everything)
-jellytools sync --force
+# Clean and download specific libraries
+jellytools posters fetch --clean-first --libraries "Movies,TV Shows"
 ```
 
 ### Command-line Options
@@ -226,6 +201,8 @@ Generate Command Options:
   --skip-low-res                  Skip generating 480p low-resolution MP4
   --skip-download                 Skip downloading posters from servers
   --skip-thumbnails               Skip generating PNG thumbnails of the last frame
+  --skip-existing                 Skip animations that already exist in the output directory
+  --libraries                     Comma-separated list of libraries to process
   -o, --output-dir OUTPUT_DIR     Output directory for videos
 
 Generate JavaScript Options:
@@ -233,14 +210,9 @@ Generate JavaScript Options:
   --replay/--no-replay            Allow videos to replay each time the element is hovered over (default: false)
   --hide-labels/--show-labels     Hide the text labels for library cards (default: true)
 
-Sync Command Options:
-  --skip-images/--sync-images     Skip syncing any images (faster) [default: sync images]
-  --all-artwork/--primary-only    Sync all artwork types including backdrops and banners [default: all artwork]
-  --sync-collections/--skip-collections  Sync collections from Plex to Jellyfin [default: sync collections]
-  --clean-collections/--preserve-collections  Clean existing collections before syncing [default: clean collections]
-  --force                         Force sync all items by clearing sync database [default: incremental sync]
-  --verbose, -v                  Enable verbose logging output
-  --clean-only                    Only clean existing collections without creating new ones
+Posters Command Options:
+  --clean-first                   Remove all existing poster files before downloading
+  --libraries                     Comma-separated list of libraries to process
 ```
 
 ## Animation Types
@@ -305,7 +277,7 @@ To use the generated JavaScript with Jellyfin, you need to install the Custom Ja
 
 ## Credits
 
-This project was developed by [Jonathan LaCour](https://cleverdevil.io) in collaboration with [Claude Code](https://claude.ai/code).
+This project was developed by [Jonathan LaCour](https://cleverdevil.io).
 
 ## License
 
